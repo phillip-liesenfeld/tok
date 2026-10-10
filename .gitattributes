@@ -1,0 +1,11 @@
+* text=auto
+*.ps1 text eol=crlf
+*.vbs text eol=crlf
+*.gif binary
+*.png binary
+*.mp4 binary
+*.zip binary
+docs/ export-ignore
+tests/ export-ignore
+tools/ export-ignore
+.gitattributes export-ignore
