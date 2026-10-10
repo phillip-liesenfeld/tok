@@ -20,7 +20,7 @@ Tok sits in the corner of the app you're using. Its belly is a small lantern, an
 
 You need Windows 10 or 11, [Claude Code](https://claude.com/claude-code), and PowerShell 7. If you don't have PowerShell 7, Install says so and stops; get it with `winget install Microsoft.PowerShell`.
 
-1. Download `tok-1.0.zip` from the [latest release](../../releases/latest) and unzip it somewhere it can stay, like `Documents\tok`.
+1. Download the zip (`tok-<version>.zip`) from the [latest release](../../releases/latest) and unzip it somewhere it can stay, like `Documents\tok`.
 2. In that folder, run:
 
    ```powershell
