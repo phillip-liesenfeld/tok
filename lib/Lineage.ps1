@@ -8,9 +8,12 @@
 #   - It molts Tok when, in the last 7 local days (the message's own day and the 6 before it), it has 3 or more counted
 #     days and at least as many as the current generation (a counted day = 10+ of its own main messages on a local day).
 #     So trying a model for an afternoon, or one day a week, doesn't molt Tok; a real switch does, on its fourth day,
-#     and a tie goes to the newer. The first generation needs only its first counted day.
+#     and a tie goes to the newer. The first generation needs only the first counted day (any model; its version is the one
+#     whose message made the day count).
 #   - A new generation's age starts on its hatch day (HatchDay), so a descendant hatches young.
-#   - A version that has been a generation never molts again (going back to an older model ages no one).
+#   - A version that has been a generation never molts again.
+#   - Age (10-10): a day with 10+ main messages from any model ages whichever Tok is current (Get-GenerationDays).
+#     Which Tok you have still follows the version, but a day split between models, or spent on an older one, counts.
 # "Replies" in the saved records are these messages (one per API call), not turns.
 # Pure functions over a hashtable kept in state.json, so tests can drive them.
 
@@ -57,20 +60,18 @@ function Add-LineageReply($Lineage, [string]$Model, [datetime]$TsUtc, [long]$Out
     if ($Project) { $rec.Projects[$Project] = 1 + [int]$rec.Projects[$Project] }
     if (-not (Test-MoltReady $Lineage $rec $v.Family $dk)) { return $null }
     $prev = @($Lineage.Generations)[-1]
-    if ($prev) {
-        $rec.HatchDay = $dk      # a descendant's age starts today; the days it spent settling in were the parent's
-        if ((Get-VersionDays $Lineage.Versions[$prev]) -ge $script:ElderDays) { $rec.Tint = $script:ElderTint }
-    }
+    if ($prev) { $rec.HatchDay = $dk }      # a descendant's age starts today; the days it spent settling in were the parent's
     $Lineage.Generations = @($Lineage.Generations) + $v.Label
+    # the parent's whole life, which ended yesterday: an elder hands on its flower colour
+    if ($prev -and (Get-GenerationDays $Lineage ($Lineage.Generations.Count - 2)) -ge $script:ElderDays) { $rec.Tint = $script:ElderTint }
     $v.Label
 }
 
 # Whether a version should become the next generation now (L1-L3, L5 of the ledger verdict).
 function Test-MoltReady($Lineage, $Rec, [string]$Family, [string]$DayKey) {
     if ($Rec.Label -in @($Lineage.Generations)) { return $false }                         # once a generation, never again
-    $days = Get-VersionDays $Rec
     $gens = @($Lineage.Generations)
-    if (-not $gens.Count) { return $days -ge 1 }                                          # the first Tok: its first day together
+    if (-not $gens.Count) { return (Get-DayTotal $Lineage $DayKey) -ge $script:DayMinReplies }   # the first Tok: the first day together, any model (10-10)
     $cur = $Lineage.Versions[$gens[-1]]
     $recent = Get-RecentCountedDays $Rec $DayKey
     if ($recent -lt $script:SettleDays -or $recent -lt (Get-RecentCountedDays $cur $DayKey)) { return $false }   # settled in, and doing as much of the work lately as the current one
@@ -89,6 +90,34 @@ function Get-VersionDays($Rec, [string]$Until = '') {
     $from = "$($Rec.HatchDay)"
     $n = 0; foreach ($e in $Rec.Days.GetEnumerator()) { if ([int]$e.Value -ge $script:DayMinReplies -and $e.Key -ge $from -and (-not $Until -or $e.Key -le $Until)) { $n++ } }
     $n
+}
+
+# All main messages on one local day, every version together (the "day counts" moment fires when this reaches DayMinReplies).
+function Get-DayTotal($Lineage, [string]$DayKey) {
+    $n = 0
+    if ($Lineage -and $Lineage.Versions -is [hashtable]) { foreach ($r in $Lineage.Versions.Values) { if ($r.Days -is [hashtable]) { $n += [int]$r.Days[$DayKey] } } }
+    $n
+}
+
+# How many days a generation has worked with the user (its age): local days with DayMinReplies+ main messages from any model,
+# from its hatch day (or, with none, its version's first day) through the day before its descendant hatched. A past generation
+# whose descendant hatched before hatch days were kept has no known end, so it keeps its own version's days, as it was counted.
+# $Index: the generation (default the current one).
+function Get-GenerationDays($Lineage, [int]$Index = -1) {
+    $gens = @($Lineage.Generations)
+    if (-not $gens.Count) { return Get-VersionDays (Get-CurrentRec $Lineage) }
+    if ($Index -lt 0) { $Index = $gens.Count - 1 }
+    $rec = $Lineage.Versions[$gens[$Index]]
+    if (-not $rec) { return 0 }
+    $until = Get-LastDay $Lineage $Index
+    if ($Index -lt $gens.Count - 1 -and -not $until) { return Get-VersionDays $rec }
+    $from = if ($rec.HatchDay) { "$($rec.HatchDay)" } else { [datetime]::Parse($rec.FirstUtc, $null, 'RoundtripKind').ToLocalTime().ToString('yyyy-MM-dd') }
+    $total = @{}
+    foreach ($r in $Lineage.Versions.Values) {
+        if ($r.Days -isnot [hashtable]) { continue }
+        foreach ($e in $r.Days.GetEnumerator()) { if ($e.Key -ge $from -and (-not $until -or $e.Key -le $until)) { $total[$e.Key] = [int]$total[$e.Key] + [int]$e.Value } }
+    }
+    @($total.Values | Where-Object { $_ -ge $script:DayMinReplies }).Count
 }
 
 # Counted days in the last SettleWindow local days up to and including $DayKey (hatch days ignored: both sides are measured alike).
@@ -192,25 +221,21 @@ function Get-LineageBackfill([string]$Root = $script:ProjectsDir) {
 }
 
 # The Family panel, as rows (the last three generations): the final stage for the portrait, and two short lines
-# under ~34 characters each, e.g. "Tok I · Opus 5 · elder" / "34 days · mostly in tok". Plain tallies, no scores.
+# under ~34 characters each, e.g. "Tok I · Opus 5 · elder" / "34 days". Plain tallies, no scores.
 # "no body" marks a generation from before this Tok hatched: it gets an empty dashed ring, not a portrait (NoBody).
-# The project goes when it would not fit (a cut-off name reads as a typo), and always in private mode.
+# The project ("mostly in tok") was cut on 10-10: most people start Claude Code in one folder, so it said "mostly at
+# home" for every generation. -Private stays for the callers; there is nothing left in the rows for it to hide.
 function Get-FamilyRows($Lineage, [string]$BornUtc, [switch]$Private) {
     $gens = @($Lineage.Generations)
     $born = if ($BornUtc) { [datetime]::Parse($BornUtc, $null, 'RoundtripKind').ToUniversalTime() } else { [datetime]::MaxValue }
     for ($i = [math]::Max(0, $gens.Count - 3); $i -lt $gens.Count; $i++) {
         $r = $Lineage.Versions[$gens[$i]]
         $fam = ($r.Families.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1).Key; if ($fam) { $fam = $fam.Substring(0, 1).ToUpper() + $fam.Substring(1) }
-        $days = Get-VersionDays $r (Get-LastDay $Lineage $i)
+        $days = Get-GenerationDays $Lineage $i
         $stage = (Get-StageForDays $days).Name
         $second = "$days $(if ($days -eq 1) { 'day' } else { 'days' })"
         $nobody = [datetime]::Parse($r.LastUtc, $null, 'RoundtripKind').ToUniversalTime() -lt $born
         if ($nobody) { $second += ' · no body'; $stage = $null }   # never had a body, so no stage and no portrait
-        elseif (-not $Private -and $r.Projects.Count) {
-            $proj = "$(($r.Projects.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1).Key)"
-            $where = if ($proj -eq 'home') { ' · mostly at home' } else { " · mostly in $proj" }
-            if (("$second$where").Length -le 28) { $second += $where }      # 28: the line sits beside a portrait
-        }
         @{ Stage = $stage; NoBody = $nobody; Lines = @("$(Get-LineageName $Lineage $i) · $fam $($r.Label)$(if ($stage) { " · $stage" })", $second) }
     }
 }

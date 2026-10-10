@@ -346,9 +346,16 @@ function ConvertTo-BodyEvents([string]$Line, [bool]$FromSubagent = $false, [stri
 # Tails every transcript written recently. Starts at end-of-file for files that
 # already exist, so history is never replayed as live events.
 # Each main transcript is one session: Cwd holds the folder it started in, Spoke when it last wrote a line (LiveCwds).
+# A file found after the first scan is either a new session or an old one written to again (a chat you came back to after
+# 30 quiet minutes, or one that was already quiet when Tok started). Either way only its lines from about the last scan on
+# are live: a forgotten file resumes where it was left, any other is read from near its end, and older lines are skipped
+# (SkipBefore), so coming back to a chat never replays it (10-10: it used to be read from the top).
 class TranscriptTail {
     [string]$Root
     [hashtable]$Offsets = @{}
+    [hashtable]$Forgotten = @{}
+    [hashtable]$SkipBefore = @{}
+    [long]$TailBytes = 4MB
     [hashtable]$Partial = @{}
     [hashtable]$Grew = @{}
     [hashtable]$Cwd = @{}
@@ -358,6 +365,13 @@ class TranscriptTail {
     [bool]$Primed = $false
 
     TranscriptTail([string]$root) { $this.Root = $root }
+
+    # Whether a line's own timestamp is before $cut (a line with none is kept).
+    static [bool] IsBefore([string]$line, [datetime]$cut) {
+        $m = [regex]::Match($line, '"timestamp":"([^"]+)"')
+        if (-not $m.Success) { return $false }
+        try { return [datetimeoffset]::Parse($m.Groups[1].Value, [cultureinfo]::InvariantCulture).UtcDateTime -lt $cut } catch { return $false }
+    }
 
     # The folder a session started in: the first "cwd" near the top of its transcript ('' until one is written). Claude Code
     # starts a transcript with a few bookkeeping lines that have none; the first prompt has it.
@@ -389,18 +403,28 @@ class TranscriptTail {
         $lines = [System.Collections.Generic.List[object]]::new()
         $now = [datetime]::UtcNow
         if (($now - $this.LastScan).TotalSeconds -ge $this.ScanSeconds) {
+            $prevScan = $this.LastScan
             $this.LastScan = $now
             foreach ($old in @($this.Grew.Keys)) {
-                if (($now - $this.Grew[$old]).TotalMinutes -gt 30) { $this.Offsets.Remove($old); $this.Partial.Remove($old); $this.Grew.Remove($old); $this.Cwd.Remove($old); $this.Spoke.Remove($old) }
+                if (($now - $this.Grew[$old]).TotalMinutes -gt 30) {
+                    $this.Forgotten[$old] = $this.Offsets[$old]
+                    $this.Offsets.Remove($old); $this.Partial.Remove($old); $this.Grew.Remove($old); $this.Cwd.Remove($old); $this.Spoke.Remove($old)
+                }
             }
             $cut = $now.AddMinutes(-20)
             foreach ($f in (Get-ChildItem $this.Root -Recurse -Filter *.jsonl -ErrorAction SilentlyContinue)) {
                 if ($f.LastWriteTimeUtc -lt $cut -or $this.Offsets.ContainsKey($f.FullName)) { continue }
-                # Files found on the first scan start at their end; files that appear
-                # later are new sessions and are read from the top.
-                $this.Offsets[$f.FullName] = if ($this.Primed) { 0L } else { $f.Length }
-                $this.Partial[$f.FullName] = ''
-                $this.Grew[$f.FullName] = $now
+                $p = $f.FullName
+                $this.Partial[$p] = ''
+                $this.Grew[$p] = $now
+                # Files found on the first scan start at their end. Later ones: see above.
+                if (-not $this.Primed) { $this.Offsets[$p] = $f.Length; continue }
+                $was = $this.Forgotten[$p]; $this.Forgotten.Remove($p)
+                if ($null -ne $was -and $was -le $f.Length) { $this.Offsets[$p] = [long]$was; continue }
+                $start = [math]::Max(0L, $f.Length - $this.TailBytes)
+                $this.Offsets[$p] = $start
+                if ($start -gt 0) { $this.Partial[$p] = "`0" }      # landed mid-line: the first fragment is dropped
+                $this.SkipBefore[$p] = $prevScan.AddSeconds(-60)
             }
             $this.Primed = $true
         }
@@ -428,8 +452,10 @@ class TranscriptTail {
                     if (-not $this.Cwd[$path]) { $this.Cwd[$path] = [TranscriptTail]::FirstCwd($path) }
                     $start = "$($this.Cwd[$path])"
                 }
+                $skip = $this.SkipBefore[$path]; $this.SkipBefore.Remove($path)
                 for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-                    if ([string]::IsNullOrWhiteSpace($parts[$i])) { continue }
+                    if ([string]::IsNullOrWhiteSpace($parts[$i]) -or $parts[$i][0] -eq [char]0) { continue }      # [char]0, not StartsWith("`0"): culture-aware StartsWith ignores NUL and matches everything
+                    if ($null -ne $skip -and [TranscriptTail]::IsBefore($parts[$i], $skip)) { continue }
                     $lines.Add([pscustomobject]@{ Line = $parts[$i]; Sub = $sub; Path = $path; Cwd = $start })
                 }
             } catch { }

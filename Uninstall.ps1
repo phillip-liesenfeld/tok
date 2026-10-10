@@ -1,9 +1,9 @@
-# Uninstall.ps1 - undoes Install.ps1: closes Tok, removes its shortcuts and its Notification hook, and deletes its data folder
+# Uninstall.ps1 - undoes Install.ps1: closes Tok, removes its shortcuts, its Notification hook and its skill, and deletes its data folder
 # (%LOCALAPPDATA%\tok: its state, family tree, settings and log).
 #   pwsh -ExecutionPolicy Bypass -File Uninstall.ps1              all of it
 #   pwsh -ExecutionPolicy Bypass -File Uninstall.ps1 -KeepData    keep the data folder (a later install picks the same Tok up)
 # This folder stays; delete it yourself afterwards. Claude Code's own files are never touched, apart from taking Tok's hook
-# back out of its settings.json.
+# back out of its settings.json and its skill out of its skills folder.
 param(
     [switch]$KeepData,
     [string]$ProgramsDir = [Environment]::GetFolderPath('Programs'),
@@ -29,6 +29,7 @@ foreach ($lnk in (Join-Path $ProgramsDir 'Tok.lnk'), (Get-StartupShortcutPath $S
 
 $settings = Join-Path $script:ClaudeDir 'settings.json'
 if ((Remove-TokHook $settings (Join-Path $here 'notify.ps1')) -eq 'removed') { "Notification hook: removed ($settings)" }
+if ((Remove-TokSkill $script:ClaudeDir $here) -eq 'removed') { "Skill tok-private: removed ($(Get-TokSkillPath $script:ClaudeDir))" }
 
 if ($KeepData) { "Kept: $script:DataDir" }
 elseif (Test-Path -LiteralPath $script:DataDir) {

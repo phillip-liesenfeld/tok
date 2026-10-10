@@ -24,7 +24,7 @@ function Move-OldTokHome {
     }
 }
 
-# Age is days worked together (Get-VersionDays in Lineage.ps1): an egg until the first day with 10+ replies, then
+# Age is days worked together (Get-GenerationDays in Lineage.ps1): an egg until the first day with 10+ replies, then
 # hatchling, kid at 3 days, adult at 10, elder at 30, counted per generation. LegacyXp is only the stopgap used until
 # the first day-count scan lands (an older state.json has no per-day counts yet); nothing shows XP any more.
 $script:Stages = @(
@@ -223,7 +223,7 @@ function Add-WeekRise($State, $Week) {
 function Get-TodayText($State) { Get-PanelText (Get-TodayPanel $State) }
 
 # Days worked together with the current generation (0 until the per-day counts exist).
-function Get-GenDays($State) { Get-VersionDays (Get-CurrentRec $State.Lineage) }
+function Get-GenDays($State) { if ($State.Lineage) { Get-GenerationDays $State.Lineage } else { 0 } }
 
 function Get-StageForDays([int]$Days) {
     $stage = $script:Stages[0]
@@ -265,6 +265,16 @@ $script:MinionRoom = 46.0
 function Get-MinionRoomX([double]$X, [bool]$Out, [double]$AppLeft) {
     if (-not $Out) { return $X }
     [math]::Max($X - $script:MinionRoom, [math]::Min($X, $AppLeft - 133))
+}
+
+# An app's frame comes from DWM in physical pixels, but Tok (system-DPI aware) lives in Windows' virtualized coordinates, where a
+# monitor at a different scale from the main one is stretched to the main one's scale. This maps the frame onto its monitor:
+# $Mon is the monitor's rect as Tok sees it; Px, Py, Pw, Ph its physical position and size. Pw or Ph 0: no mapping.
+function ConvertTo-LogicalRect($R, $Mon, [double]$Px, [double]$Py, [double]$Pw, [double]$Ph) {
+    if ($Pw -le 0 -or $Ph -le 0) { return @{ Left = $R.Left; Top = $R.Top; Right = $R.Right; Bottom = $R.Bottom } }
+    $sx = ($Mon.Right - $Mon.Left) / $Pw; $sy = ($Mon.Bottom - $Mon.Top) / $Ph
+    @{ Left = $Mon.Left + ($R.Left - $Px) * $sx; Top = $Mon.Top + ($R.Top - $Py) * $sy
+       Right = $Mon.Left + ($R.Right - $Px) * $sx; Bottom = $Mon.Top + ($R.Bottom - $Py) * $sy }
 }
 
 # Easter eggs in a prompt. Saying "Tok" perks it up, but not the file or folder (tok.ps1, tok\, tok/, tools/tok-x).

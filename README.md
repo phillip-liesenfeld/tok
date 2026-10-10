@@ -33,11 +33,12 @@ You need Windows 10 or 11, [Claude Code](https://claude.com/claude-code), and Po
    |---|---|
    | `-ExactUsage` | the network call above |
    | `-Hook` | the permission-prompt wave above |
+   | `-Skills` | adds the `tok-private` skill to `~\.claude\skills`, so Claude puts Tok in private mode before sensitive work |
    | `-StartWithWindows` | start Tok when you sign in |
 
 **To close Tok:** right-click it › Goodbye. Start it again from the Start menu.
 
-**To uninstall:** `pwsh -ExecutionPolicy Bypass -File Uninstall.ps1`. It closes Tok, removes its shortcuts and hook, and deletes `%LOCALAPPDATA%\tok` (`-KeepData` keeps it). Then delete the folder.
+**To uninstall:** `pwsh -ExecutionPolicy Bypass -File Uninstall.ps1`. It closes Tok, removes its shortcuts, hook and skill, and deletes `%LOCALAPPDATA%\tok` (`-KeepData` keeps it). Then delete the folder.
 
 ## What you'll see
 
@@ -100,7 +101,7 @@ Everything is also in `%LOCALAPPDATA%\tok\config.json` (Tok re-reads it every 30
 | `Follow` | `true` | sit on the active app |
 | `YourName` | empty | a name for the few lines that use one |
 | `BubbleFontSize` | `16` | |
-| `PrivateMinutes`, `PrivatePatterns` | `15`, built in | private mode, below |
+| `PrivateMinutes`, `PrivateExtra`, `PrivatePatterns` | `15`, none, built in | private mode, below (`PrivateExtra` adds patterns, `PrivatePatterns` replaces the list) |
 | `LimitUsd` | by your plan | the estimate's 5-hour limit, in API dollars |
 
 If the estimate drifts from Claude Code's own `/usage` panel, run `.\calibrate.ps1 42` with the 5-hour percentage the panel shows, and Tok sets `LimitUsd` from it.
@@ -109,7 +110,7 @@ If the estimate drifts from Claude Code's own `/usage` panel, run `.\calibrate.p
 
 For screen sharing, or work on passwords, keys, money or health. Tok keeps living, but its bubbles stop naming files, commands, searches and projects, and it wears sunglasses so you can tell.
 
-Turn it on from Settings, or with `private.ps1` (`-Minutes 30`, `-Off`, `-Quit`). Tok also goes private for 15 minutes on its own when a tool call or a prompt looks sensitive, like a `.env` or key file, a password manager's CLI, or bank or medical words. Nothing it matched is shown or logged.
+Turn it on from Settings, or with `private.ps1` (`-Minutes 30`, `-Off`, `-Quit`). Tok also goes private for 15 minutes on its own when a tool call or a prompt looks sensitive, like a `.env` or key file, a password manager's CLI, cloud secrets, a mail or drive connector, or bank or medical words. Nothing it matched is shown or logged. That list is a safety net and can't know every tool you use: add your own regular expressions to `PrivateExtra` in `config.json`, install the skill (`Install.ps1 -Skills`) so Claude turns private mode on before sensitive work, and for screen sharing turn it on yourself.
 
 ## How it was made
 

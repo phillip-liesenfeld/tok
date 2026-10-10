@@ -99,3 +99,30 @@ function Get-ForeignDataItems([string]$Dir) {
     if (-not (Test-Path -LiteralPath $Dir)) { return @() }
     @(Get-ChildItem -LiteralPath $Dir -Force | Where-Object { $_.Name -notin $script:TokDataNames -and $_.Name -notlike '*.tmp' } | ForEach-Object Name)
 }
+
+# The tok-private skill (skills\tok-private\SKILL.md, this copy's path filled in): lets Claude put Tok in private mode by itself
+# before sensitive work. Installed only on request (Install.ps1 -Skills), into Claude Code's skills folder, and never over a
+# skill of that name that some other copy or the user made. Returns 'added', 'updated' or 'theirs'.
+$script:TokSkillName = 'tok-private'
+function Get-TokSkillPath([string]$ClaudeDir) { Join-Path $ClaudeDir "skills\$script:TokSkillName\SKILL.md" }
+function Test-TokSkillOurs([string]$Path, [string]$TokDir) {
+    (Test-Path -LiteralPath $Path) -and (Get-Content -LiteralPath $Path -Raw).Contains("<!-- installed by Tok from $TokDir;")
+}
+function Add-TokSkill([string]$ClaudeDir, [string]$TokDir) {
+    $path = Get-TokSkillPath $ClaudeDir
+    $was = Test-Path -LiteralPath $path
+    if ($was -and -not (Test-TokSkillOurs $path $TokDir)) { return 'theirs' }
+    $text = (Get-Content -LiteralPath (Join-Path $TokDir "skills\$script:TokSkillName\SKILL.md") -Raw).Replace('{{TOK}}', $TokDir)
+    $null = New-Item -ItemType Directory -Force (Split-Path $path)
+    [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+    if ($was) { 'updated' } else { 'added' }
+}
+# Takes this copy's skill out again (and its folder, if nothing else is in it). Returns 'removed' or 'none'.
+function Remove-TokSkill([string]$ClaudeDir, [string]$TokDir) {
+    $path = Get-TokSkillPath $ClaudeDir
+    if (-not (Test-TokSkillOurs $path $TokDir)) { return 'none' }
+    Remove-Item -LiteralPath $path -Force
+    $dir = Split-Path $path
+    if (-not @(Get-ChildItem -LiteralPath $dir -Force).Count) { Remove-Item -LiteralPath $dir -Force }
+    'removed'
+}

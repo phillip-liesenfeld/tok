@@ -3,6 +3,8 @@
 #   pwsh -ExecutionPolicy Bypass -File Install.ps1 -StartWithWindows   ...and start it when you sign in
 #   pwsh -ExecutionPolicy Bypass -File Install.ps1 -Hook               ...and let Claude Code tell Tok when it needs your OK
 #                                                                      (a Notification hook in ~\.claude\settings.json)
+#   pwsh -ExecutionPolicy Bypass -File Install.ps1 -Skills             ...and teach Claude Code to put Tok in private mode before
+#                                                                      sensitive work (the tok-private skill in ~\.claude\skills)
 #   pwsh -ExecutionPolicy Bypass -File Install.ps1 -ExactUsage         ...and let Tok ask Anthropic for your exact 5-hour usage, with
 #                                                                      Claude Code's own login (writes LiveUsage: true to config.json;
 #                                                                      off unless you ask, here or in right-click > Settings > Exact usage)
@@ -11,6 +13,7 @@
 param(
     [switch]$StartWithWindows,
     [switch]$Hook,
+    [switch]$Skills,
     [switch]$ExactUsage,
     [switch]$NoStart,
     [string]$ProgramsDir = [Environment]::GetFolderPath('Programs'),    # the Start menu (tools\Test-Install.ps1 uses a temp folder)
@@ -71,6 +74,13 @@ if ($Hook) {
     } catch { "Notification hook skipped: settings.json isn't valid JSON. Fix it, then run Install.ps1 -Hook." }
 }
 
+$skillOn = $false
+if ($Skills) {
+    $r = Add-TokSkill $script:ClaudeDir $here
+    if ($r -eq 'theirs') { "Skill skipped: $(Get-TokSkillPath $script:ClaudeDir) is already there and isn't this Tok's." }
+    else { "Skill tok-private: $r ($(Get-TokSkillPath $script:ClaudeDir)). New Claude Code sessions pick it up."; $skillOn = $true }
+}
+
 $exactOn = $false
 if ($ExactUsage) {
     if (Set-ConfigFileKey 'LiveUsage' $true) { $exactOn = $true }
@@ -82,6 +92,7 @@ if ($ExactUsage) {
 $then = [string][char]0x203A
 "Exact usage: $(if ($exactOn) { 'on' } else { "off (right-click Tok $then Settings)" })"
 "Wave at permission prompts: $(if ($hookOn) { 'on' } else { 'off (Install.ps1 -Hook)' })"
+"Private mode by Claude (tok-private skill): $(if ($skillOn) { 'on' } else { 'off (Install.ps1 -Skills)' })"
 "Start with Windows: $(if ($StartWithWindows) { 'on' } else { "off (right-click Tok $then Settings)" })"
 "Close Tok: right-click it $then Goodbye"
 

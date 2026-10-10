@@ -1,4 +1,4 @@
-# Dreams.ps1 - what Tok dreams about while asleep: remixes of the day, never scary, always ending in waking.
+﻿# Dreams.ps1 - what Tok dreams about while asleep: remixes of the day, never scary, always ending in waking.
 # Pure function so tests can call it: Get-Dream state recent-hints rng private -> @{ Text; Subject; Ancestor }
 # In private mode only the generic dreams are used, never anything from recent work. Once per generation Tok has one
 # quiet dream about the Tok before it (Ancestor = $true; the caller marks it on the generation). It never claims to
@@ -22,16 +22,17 @@ function Get-Dream($State, $Recent, [System.Random]$Rng, [bool]$Private = $false
         $hints = @($Recent | Where-Object { $_ -and $_.Length -le 40 })
         if ($top) {
             $n = [int]$top.Value
-            $options.Add(@{ Text = "💭 …$n $($top.Key) calls, falling like snow…"; Subject = "$n $($top.Key) calls" })
+            if ($n -ge 2) { $options.Add(@{ Text = "💭 …$n $($top.Key) calls, falling like snow…"; Subject = "$n $($top.Key) calls" }) }
             $options.Add(@{ Text = "💭 …A giant $($top.Key) was asleep next to me…"; Subject = "a giant, sleepy $($top.Key)" })
         }
         if ($hints.Count) {
             $h = & $pick $hints
             $options.Add(@{ Text = "💭 …Someone kept whispering ""$h""…"; Subject = $h })
-            $options.Add(@{ Text = "💭 …$h, but every line was a little garden…"; Subject = "$h as a garden" })
+            $options.Add(@{ Text = "💭 …""$h"" grew into a little garden…"; Subject = "$h as a garden" })
         }
-        if ($t.Errors -gt 0) { $options.Add(@{ Text = "💭 …The $($t.Errors) errors, all fixed, wearing little hats…"; Subject = 'the errors in little hats' }) }
-        if ($t.Prompts -gt 0) { $options.Add(@{ Text = "💭 …You asked me $($t.Prompts) questions and I answered all of them with huzzah…"; Subject = 'answering everything with huzzah' }) }
+        # counts only where a count reads well (never "1 errors"), and nothing Tok can't know ("all fixed")
+        if ($t.Errors -ge 2) { $options.Add(@{ Text = "💭 …$($t.Errors) errors, each in a little hat…"; Subject = 'the errors in little hats' }) }
+        if ($t.Prompts -ge 3) { $options.Add(@{ Text = '💭 …You kept asking me things, and I answered every one with huzzah…'; Subject = 'answering everything with huzzah' }) }
     }
     # the quiet one, once per generation: the Tok just before this one
     $rec = if ($gens.Count -gt 1) { $lin.Versions[$gens[-1]] }

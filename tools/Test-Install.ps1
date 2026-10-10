@@ -47,7 +47,7 @@ $tok = $null
 try {
     $hookCmd = Get-TokHookCommand (Join-Path $root 'notify.ps1')
     # ---- install
-    $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install.ps1') -NoStart -Hook -StartWithWindows -ProgramsDir $programs -StartupDir $startup 2>&1
+    $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install.ps1') -NoStart -Hook -Skills -StartWithWindows -ProgramsDir $programs -StartupDir $startup 2>&1
     $code = $LASTEXITCODE
     Check 'install: exits cleanly and finds the Claude Code sessions' { $code -eq 0 -and ($out -join "`n") -match 'Claude Code: found' }
     Check 'install: a Start menu shortcut and a Startup one, both starting this copy' {
@@ -56,6 +56,10 @@ try {
     Check 'install: the Notification hook is in the temp Claude settings' {
         $h = @((Get-Content (Join-Path $claude 'settings.json') -Raw | ConvertFrom-Json -AsHashtable).hooks.Notification)
         $h.Count -eq 1 -and $h[0].hooks[0].command -eq $hookCmd
+    }
+    Check 'install -Skills: the tok-private skill is in the temp Claude folder, pointing at this copy' {
+        $sk = Join-Path $claude 'skills\tok-private\SKILL.md'
+        (Test-Path $sk) -and (Get-Content $sk -Raw).Contains("'$root\private.ps1'") -and (Get-Content $sk -Raw) -notmatch '\{\{TOK\}\}' -and ($out -join "`n") -match 'tok-private skill\): on'
     }
     Check 'install: it ends by saying what is on and off, and how to close Tok' {
         $o = $out -join "`n"
@@ -66,14 +70,16 @@ try {
     $claude2 = Join-Path $t 'claude-broken'; $null = New-Item -ItemType Directory -Force $claude2
     $badRaw = '{ "hooks": { oops'
     [IO.File]::WriteAllText((Join-Path $claude2 'settings.json'), $badRaw)
+    $theirs = Join-Path $claude2 'skills\tok-private\SKILL.md'; $null = New-Item -ItemType Directory -Force (Split-Path $theirs); Set-Content $theirs 'their own skill'
     $env:CLAUDE_CONFIG_DIR = $claude2
-    try { $out2 = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install.ps1') -NoStart -Hook -ProgramsDir $programs -StartupDir $startup 2>&1; $code2 = $LASTEXITCODE } finally { $env:CLAUDE_CONFIG_DIR = $claude }
+    try { $out2 = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Install.ps1') -NoStart -Hook -Skills -ProgramsDir $programs -StartupDir $startup 2>&1; $code2 = $LASTEXITCODE } finally { $env:CLAUDE_CONFIG_DIR = $claude }
     Check 'install -Hook: a settings.json that is not valid JSON is skipped with one line, left untouched, and Install still finishes (exit 0, the closing lines)' {
         $o2 = $out2 -join "`n"
         $code2 -eq 0 -and $o2 -match [regex]::Escape("Notification hook skipped: settings.json isn't valid JSON. Fix it, then run Install.ps1 -Hook.") -and
         [IO.File]::ReadAllText((Join-Path $claude2 'settings.json')) -ceq $badRaw -and -not (Test-Path (Join-Path $claude2 'settings.json.tok-backup')) -and
         $o2 -match 'Wave at permission prompts: off \(Install\.ps1 -Hook\)' -and $o2 -match 'Close Tok:'
     }
+    Check 'install -Skills: a tok-private skill someone else made is left alone, and said so' { ($out2 -join "`n") -match 'Skill skipped' -and (Get-Content $theirs -Raw).Trim() -eq 'their own skill' }
 
     # ---- first run (no config, no login: Tok can't and doesn't call anything)
     $tok = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList '-STA', '-NoProfile', '-File', (Join-Path $root 'tok.ps1'), '-X', '20000', '-Y', '20000'
@@ -117,9 +123,10 @@ try {
     $out = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'Uninstall.ps1') -ProgramsDir $programs -StartupDir $startup 2>&1
     $code = $LASTEXITCODE
     Check 'uninstall: exits cleanly' { $code -eq 0 -and ($out -join "`n") -match 'uninstalled' }
-    Check 'uninstall: shortcuts, hook and data folder gone; the Claude folder and its sessions stay' {
+    Check 'uninstall: shortcuts, hook, skill and data folder gone; the Claude folder and its sessions stay' {
         -not (Test-Path (Join-Path $programs 'Tok.lnk')) -and -not (Test-Path (Join-Path $startup 'Tok.lnk')) -and -not (Test-Path $data) -and
-        (Get-Content (Join-Path $claude 'settings.json') -Raw) -notmatch 'notify\.ps1' -and (Test-Path (Join-Path $session 'demo.jsonl'))
+        (Get-Content (Join-Path $claude 'settings.json') -Raw) -notmatch 'notify\.ps1' -and (Test-Path (Join-Path $session 'demo.jsonl')) -and
+        -not (Test-Path (Join-Path $claude 'skills\tok-private'))
     }
 } finally {
     $env:TOK_DATA_DIR, $env:CLAUDE_CONFIG_DIR = $saved

@@ -79,6 +79,34 @@ Add-Content (Join-Path $tmp 'old.jsonl') " done`n" -NoNewline
 Check 'tail: partial line completed' { ($tail.Poll()).Line -eq 'partial done' }
 Remove-Item $tmp -Recurse -Force
 
+# --- coming back to a chat never replays it (10-10): a file quiet when Tok started, and one forgotten after 30 quiet minutes
+$tmp = Join-Path ([IO.Path]::GetTempPath()) "body-back-$PID"; $null = New-Item -ItemType Directory -Force $tmp
+$tsOld = [datetime]::UtcNow.AddHours(-2).ToString('o'); $tsNew = { [datetime]::UtcNow.ToString('o') }
+$quiet = Join-Path $tmp 'quiet.jsonl'
+Set-Content $quiet (1..5 | ForEach-Object { '{"type":"user","timestamp":"' + $tsOld + '","n":' + $_ + '}' })
+[IO.File]::SetLastWriteTimeUtc($quiet, [datetime]::UtcNow.AddHours(-1))
+$bt = [TranscriptTail]::new($tmp); $bt.ScanSeconds = 0
+Check 'back: a chat already quiet at start-up is not read' { $bt.Poll().Count -eq 0 }
+Add-Content $quiet ('{"type":"user","timestamp":"' + (& $tsNew) + '","n":"back"}')
+$got = @($bt.Poll())
+Check 'back: a quiet chat written again gives only its new line, not the whole chat' { $got.Count -eq 1 -and $got[0].Line -match '"back"' }
+$bt.Grew[$quiet] = [datetime]::UtcNow.AddMinutes(-31); [IO.File]::SetLastWriteTimeUtc($quiet, [datetime]::UtcNow.AddMinutes(-31))
+$null = $bt.Poll()
+Check 'back: 30 quiet minutes and the file is forgotten, its place kept' { -not $bt.Offsets.ContainsKey($quiet) -and $bt.Forgotten.ContainsKey($quiet) }
+Add-Content $quiet ('{"type":"user","timestamp":"' + (& $tsNew) + '","n":"again"}')
+$got = @($bt.Poll())
+Check 'back: a forgotten chat resumes where it was left' { $got.Count -eq 1 -and $got[0].Line -match '"again"' }
+$fresh = Join-Path $tmp 'fresh.jsonl'
+Set-Content $fresh @(('{"type":"user","timestamp":"' + (& $tsNew) + '","n":1}'), ('{"type":"user","timestamp":"' + (& $tsNew) + '","n":2}'))
+$got = @($bt.Poll())
+Check 'back: a brand-new session is read from its first line' { $got.Count -eq 2 }
+$big = Join-Path $tmp 'big.jsonl'
+Set-Content $big ((1..40 | ForEach-Object { '{"type":"user","timestamp":"' + $tsOld + '","pad":"' + ('x' * 100) + '"}' }) + ('{"type":"user","timestamp":"' + (& $tsNew) + '","n":"tail"}'))
+$bt.TailBytes = 1000
+$got = @($bt.Poll())
+Check 'back: a long file is read from near its end, the cut line dropped, old lines skipped' { $got.Count -eq 1 -and $got[0].Line -match '"tail"' }
+Remove-Item $tmp -Recurse -Force
+
 # --- one session, one project name (10-09 night): the folder the session started in, not wherever Claude cd'd to since
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "body-proj-$PID"; $null = New-Item -ItemType Directory -Force "$tmp\a\s1\subagents", "$tmp\b"
 Set-Content "$tmp\a\s1.jsonl" '{"type":"queue-operation"}', '{"type":"user","cwd":"C:\\Users\\x\\sample-game","message":{"role":"user","content":"hi"}}' -NoNewline:$false
@@ -214,6 +242,14 @@ $rowsD = @(Get-FamilyRows $simD.L)
 Check 'mixing D: Family shows Tok I for the 2 days before its descendant hatched, not 60' { $rowsD[0].Lines[1] -match '^2 days' -and $rowsD[1].Lines[1] -match '^5\d days' }
 Check 'mixing E: 6 Sonnet 5.5 + 6 Haiku 5.5 a day is one generation that ages every day' { (@($simE.L.Generations) -join ',') -eq '5.5' -and (Get-VersionDays $simE.L.Versions['5.5']) -eq 60 }
 Check 'mixing: a real switch (30 days Opus 5.5, then Fable 5.1 only) molts on the switch''s 4th day' { (@($simS.L.Generations) -join ',') -eq '5.5,5.1' -and $simS.Molts['5.1'] -eq 33 }
+# 10-10: any model's day ages the current Tok. F: a day split 6/6 between versions used to age no one (and never
+# hatched the egg). J: after Fable 5.1 molts in, the days spent on Opus 5.5 still age the Fable Tok.
+$simF = & $sim 20 { param($d) , @('claude-opus-5-5', 6); , @('claude-fable-5-1', 6) }
+Check 'mixing F: 6 Opus 5.5 + 6 Fable 5.1 a day hatches on day one and ages every day' { @($simF.L.Generations).Count -eq 1 -and (Get-GenerationDays $simF.L) -eq 20 -and (Get-PetStage @{ Lineage = $simF.L; Xp = 0 }).Name -eq 'adult' }
+$simJ = & $sim 50 { param($d) if ($d -lt 30 -or $d % 7 -in 2, 5) { , @('claude-opus-5-5', 12) } else { , @('claude-fable-5-1', 12) } }
+Check 'mixing J: Fable 5.1 molts in, then every day ages it, Opus days too' {
+    $h = $simJ.Molts['5.1']; (@($simJ.L.Generations) -join ',') -eq '5.5,5.1' -and $h -gt 30 -and (Get-GenerationDays $simJ.L) -eq (50 - $h) -and (Get-VersionDays $simJ.L.Versions['5.1']) -lt (50 - $h) }
+Check 'mixing J: the Opus Tok''s days stop the day before the Fable Tok hatched' { (Get-GenerationDays $simJ.L 0) -eq $simJ.Molts['5.1'] }
 $realState = Join-Path $env:LOCALAPPDATA 'tok\state.json'
 if (Test-Path $realState) {
     $rl = (Get-Content $realState -Raw | ConvertFrom-Json -AsHashtable).Lineage      # read only
@@ -265,16 +301,35 @@ Check 'private: the false alarms of 10-06 stay quiet' {
     -not (Test-Sensitive (& $keys 'Write' @{ file_path = 'C:\x\notes.md'; content = 'the api_key and the password and op read' }) $pp) -and
     -not (Test-Sensitive (& $keys 'Bash' @{ command = "python - <<'EOF'`nprint('op read secret .env')`nEOF"; description = 'x' }) $pp)
 }
-Check 'private: only the key argument is kept' { ((& $keys 'Write' @{ file_path = 'C:\x\a.md'; content = 'big body' }) -join '|') -eq 'Write|C:\x\a.md' -and ((& $keys 'Read' @{ file_path = 'C:\Users\x\Documents\tok\README.md' }) -join '|') -eq 'Read' }
-Check 'private: the log gets the pattern, never the text' { (Find-Sensitive @('cat ~/.ssh/id_rsa') $pp) -eq $pp[2] }
+Check 'private: only the key argument is kept' { ((& $keys 'Write' @{ file_path = 'C:\x\a.md'; content = 'big body' }) -join '|') -eq 'Write|C:\x\a.md' -and ((& $keys 'Read' @{ file_path = (Join-Path $root 'README.md') }) -join '|') -eq 'Read' -and ((& $keys 'Read' @{ file_path = 'C:\Users\x\Documents\tok\README.md' }) -join '|') -ne 'Read' }
+Check 'private: the log gets the pattern, never the text' { (Find-Sensitive @('cat ~/.ssh/id_rsa') $pp) -ceq '(^|[\\/])id_(rsa|ed25519|ecdsa)\b' }
 Check 'private: empty and bad patterns are harmless' { -not (Test-Sensitive @('', $null) $pp) -and -not (Test-Sensitive @('abc') @('([bad')) }
-Check 'private: config patterns replace the defaults' { (Test-Sensitive @('pineapple') (Get-PrivatePatterns @{ PrivatePatterns = @('pineapple') })) -and -not (Test-Sensitive @('password') (Get-PrivatePatterns @{ PrivatePatterns = @('pineapple') })) }
+# 10-10, other people's setups: other password managers, cloud secrets, credential files named in a command, any mail or money connector
+Check 'private: other password managers and cloud secrets look sensitive' {
+    @('bw get password github', 'keepassxc-cli show db.kdbx entry', 'pass show email/work', 'Get-Secret -Name token', 'aws secretsmanager get-secret-value --secret-id x',
+      'aws ssm get-parameter --name /x --with-decryption', 'az keyvault secret show --name x', 'gcloud secrets versions access latest', 'vault kv get secret/x',
+      'kubectl get secret db -o yaml', 'gh auth token', 'cat .env', 'type "C:\app\.env.production"', 'cat ~/.aws/credentials', 'cat ~/.git-credentials',
+      'cat ~/.npmrc', 'Get-Content $HOME\.kube\config', 'cat terraform.tfstate', 'C:\keys\server.ppk', 'C:\infra\prod.tfvars' |
+      Where-Object { -not (Test-Sensitive @($_) $pp) }).Count -eq 0
+}
+Check 'private: mail, drive and money connectors look sensitive by name' {
+    (Test-Sensitive @('mcp__outlook__list_messages') $pp) -and (Test-Sensitive @('mcp__acme_Dropbox__download') $pp) -and (Test-Sensitive @('mcp__claude_ai_Gmail__get_thread') $pp) -and
+    -not (Test-Sensitive @('mcp__claude_ai_github__get_me') $pp) -and -not (Test-Sensitive @('mcp__house__ha_states') $pp)
+}
+Check 'private: the broader list stays quiet on ordinary work' {
+    @('npm run build', 'git push', 'passing tests', 'cat environment.md', 'python -m pytest', 'ls .github', 'edit the keyboard layout', 'C:\x\.envrc.md', 'kubectl get pods', 'aws s3 ls',
+      'gh pr list', 'Get-SecretSauce.ps1 is a file name', 'C:\x\credentials-guide.md' | Where-Object { Test-Sensitive @($_) $pp }).Count -eq 0
+}
+Check 'private: PrivateExtra adds to the defaults instead of replacing them' {
+    $px = Get-PrivatePatterns @{ PrivateExtra = @('\bmy-vault\b') }
+    (Test-Sensitive @('my-vault open') $px) -and (Test-Sensitive @('bw get x') $px) -and (Test-Sensitive @('my password') (Get-PrivatePatterns @{ PrivateExtra = @('x') } -Prompt))
+}Check 'private: config patterns replace the defaults' { (Test-Sensitive @('pineapple') (Get-PrivatePatterns @{ PrivatePatterns = @('pineapple') })) -and -not (Test-Sensitive @('password') (Get-PrivatePatterns @{ PrivatePatterns = @('pineapple') })) }
 $now = [datetime]::UtcNow
 Check 'private: by hand, on a timer, or off' { (Test-PrivateNow @{ Private = $true }) -and (Test-PrivateNow @{ PrivateUntil = $now.AddMinutes(5).ToString('o') }) -and -not (Test-PrivateNow @{ PrivateUntil = $now.AddMinutes(-1).ToString('o') }) -and -not (Test-PrivateNow @{}) }
 Check 'private: tool lines carry no details' { (Get-PrivateToolLine 'Read') -ceq '👀 Reading something' -and (Get-PrivateToolLine 'mcp__claude_ai_Gmail__get_thread') -ceq '🤫 Busy' -and (Get-PrivateToolLine 'ExitPlanMode') -ceq '📋 The plan is ready.' -and (Get-PrivateToolLine 'Bash') -notmatch '\{0\}' }
-Check 'family: two lines per generation; the project shows, but never in private mode' {
+Check 'family: two lines per generation, and no project, private or not' {
     $f = Get-FamilyText $lin $t0.AddDays(20).ToString('o'); $fp = Get-FamilyText $lin $t0.AddDays(20).ToString('o') -Private
-    @($f -split "`n").Count -eq 5 -and @($fp -split "`n").Count -eq 5 -and $fp -notmatch 'sample-app|mostly in'
+    @($f -split "`n").Count -eq 5 -and @($fp -split "`n").Count -eq 5 -and $f -notmatch 'sample-app|mostly' -and $fp -notmatch 'sample-app|mostly'
 }
 
 # --- dreams
@@ -291,6 +346,12 @@ $anc = @($dreams | Where-Object { $_.Ancestor })
 Check 'dreams: the ancestor dream is quiet and claims no memory' { $anc.Count -gt 0 -and $anc[0].Text -match "^💭 …Tok I was here\. I don't remember it\.$" }
 (Get-CurrentRec $ds.Lineage).AncestorDreamt = $true
 Check 'dreams: the ancestor dream comes once per generation' { @(1..60 | ForEach-Object { Get-Dream $ds @() $rng } | Where-Object { $_.Ancestor }).Count -eq 0 }
+# 10-10: "You asked me 1 questions": a count shows only where it reads as a plural, and the prompts dream has no count at all
+$one = New-PetState; $ot = Get-Today $one; $ot.Tools['Bash'] = 1; $ot.Errors = 1; $ot.Prompts = 1
+$od = @(1..80 | ForEach-Object { Get-Dream $one @('List files') $rng })
+Check 'dreams: never "1 calls" or "1 errors", nothing claimed fixed' { @($od.Text | Where-Object { $_ -match '\b1 \w+s\b|all fixed|1 questions' }).Count -eq 0 }
+$many = New-PetState; $mt = Get-Today $many; $mt.Prompts = 7
+Check 'dreams: many prompts dream of huzzah without a number' { @(1..80 | ForEach-Object { (Get-Dream $many @() $rng).Text } | Where-Object { $_ -match 'kept asking me things' -and $_ -notmatch '\d' }).Count -gt 0 }
 Check 'dreams: work on an empty day' { (Get-Dream (New-PetState) @() $rng).Text -match '^💭' }
 
 # --- real limits (Claude Code's cached usage in ~/.claude.json)
@@ -515,6 +576,12 @@ Check 'bubbles: a Low bubble waits for quiet and never queues behind one' {
 Check 'bubbles: a live bubble ends a Low one early, and queues behind a live one' {
     (Get-BubbleVerdict $false $true $true 0) -eq 'cut' -and (Get-BubbleVerdict $false $true $false 0) -eq 'queue' -and (Get-BubbleVerdict $false $false $false 0) -eq 'queue'
 }
+# a second monitor at another scale (10-10, e.g. a 150% laptop screen at 0,0 and a 100% 2560x1080 ultrawide above it at
+# 694,-1080; Tok sees the ultrawide stretched to 3840x1620 at 1041,-1620). An app maximized there must map to that whole monitor.
+$uw = ConvertTo-LogicalRect @{ Left = 694; Top = -1080; Right = 3254; Bottom = -48 } @{ Left = 1041; Top = -1620; Right = 4881; Bottom = 0 } 694 -1080 2560 1080
+Check 'perch: an app on a monitor at another scale maps onto that monitor, edge to edge' { $uw.Left -eq 1041 -and $uw.Right -eq 4881 -and $uw.Top -eq -1620 -and $uw.Bottom -eq -72 }
+$same = ConvertTo-LogicalRect @{ Left = 10; Top = 20; Right = 3000; Bottom = 2000 } @{ Left = 0; Top = 0; Right = 3840; Bottom = 2160 } 0 0 3840 2160
+Check 'perch: the main monitor maps to itself, and no display info means no mapping' { $same.Left -eq 10 -and $same.Right -eq 3000 -and (ConvertTo-LogicalRect @{ Left = 5; Top = 6; Right = 7; Bottom = 8 } $null 0 0 0 0).Right -eq 7 }
 Check 'perch: minions make room by shifting left, and glide back' { (Get-MinionRoomX 1000 $false 0) -eq 1000 -and (Get-MinionRoomX 1000 $true 0) -eq 954 }
 Check 'perch: the shift never goes past the app left edge, nor right of the perch' {
     (Get-MinionRoomX 0 $true 100) -eq -33 -and (Get-MinionRoomX 250 $true 200) -eq 204 -and (Get-MinionRoomX 10 $true 500) -le 10
@@ -578,18 +645,19 @@ Check 'stats: no XP, no lifetime token tally, no nap count, no countdown to the 
 }
 Check 'stats: every line fits the bubble' { @((Get-StatsText $aged $ws) -split "`n" | Where-Object { $_.Length -gt 34 }).Count -eq 0 -and @((Get-StatsText (New-PetState) $ws) -split "`n" | Where-Object { $_.Length -gt 34 }).Count -eq 0 }
 $rows = @(Get-FamilyRows $aged.Lineage $aged.BornUtc)
-Check 'family: one line each for name, version and final stage, then days and where' {
-    $rows.Count -eq 2 -and -not $rows[0].Stage -and $rows[1].Stage -eq 'adult' -and $rows[0].Lines[0] -ceq 'Tok I · Opus 5' -and $rows[1].Lines[0] -ceq 'Tok II · Opus 5.5 · adult' -and $rows[1].Lines[1] -eq '14 days · mostly in tok'
+Check 'family: one line each for name, version and final stage, then the days' {
+    $rows.Count -eq 2 -and -not $rows[0].Stage -and $rows[1].Stage -eq 'adult' -and $rows[0].Lines[0] -ceq 'Tok I · Opus 5' -and $rows[1].Lines[0] -ceq 'Tok II · Opus 5.5 · adult' -and $rows[1].Lines[1] -eq '14 days'
 }
-Check 'family: a generation from before Tok hatched stays "no body"' { $rows[0].Lines[1] -eq '34 days · no body' }
+# Tok I's 34 days of its own, plus the 2 days Opus 5.5 was settling in while Tok I was still current (any model counts, 10-10)
+Check 'family: a generation from before Tok hatched stays "no body"' { $rows[0].Lines[1] -eq '36 days · no body' }
 Check 'family: a "no body" generation has no stage and no portrait' { -not $rows[0].Stage -and $rows[0].Lines[0] -notmatch '(egg|hatchling|kid|adult|elder)$' }
 $lateBorn = (Get-FamilyRows $aged.Lineage $d0.AddDays(-200).ToUniversalTime().ToString('o'))
-Check 'family: a generation Tok lived through names its project' { $lateBorn[0].Lines[1] -eq '34 days · mostly in tok' }
-Check 'family: home reads "mostly at home"; a no-body generation is flagged for the empty ring' {
+Check 'family: a generation Tok lived through shows its days, no project (10-10)' { $lateBorn[0].Lines[1] -eq '36 days' }
+Check 'family: no "mostly at home"; a no-body generation is flagged for the empty ring' {
     $hr = @(Get-FamilyRows (New-AgedState 3 4 'home').Lineage $d0.AddDays(-200).ToUniversalTime().ToString('o'))
-    $hr[1].Lines[1] -eq '4 days · mostly at home' -and $rows[0].NoBody -and -not $rows[1].NoBody
+    $hr[1].Lines[1] -eq '4 days' -and $rows[0].NoBody -and -not $rows[1].NoBody
 }
-Check 'family: private mode leaves the project out' { (@(Get-FamilyRows $aged.Lineage $d0.AddDays(-200).ToUniversalTime().ToString('o') -Private))[1].Lines[1] -eq '14 days' }
+Check 'family: private mode shows the same days' { (@(Get-FamilyRows $aged.Lineage $d0.AddDays(-200).ToUniversalTime().ToString('o') -Private))[1].Lines[1] -eq '14 days' }
 Check 'family: no scores, and every line fits the bubble' {
     $long = New-AgedState 34 1 'a-rather-long-project-folder-name'
     $lt = Get-FamilyText $long.Lineage $d0.AddDays(-200).ToUniversalTime().ToString('o')
@@ -605,7 +673,7 @@ Check 'family: the portrait is drawn live from parameters, for every stage' {
 }
 $tl = New-AgedState 31 1
 Check 'tint: a generation that ended as an elder hands its flower colour to the next' { $tl.Lineage.Versions['5.5'].Tint -eq $script:Petal -and -not $tl.Lineage.Versions['5'].Tint }
-Check 'tint: a generation that ended short of elder passes nothing on' { -not (New-AgedState 29 1).Lineage.Versions['5.5'].Tint -and -not (New-AgedState 10 1).Lineage.Versions['5.5'].Tint }
+Check 'tint: a generation that ended short of elder passes nothing on' { -not (New-AgedState 27 1).Lineage.Versions['5.5'].Tint -and -not (New-AgedState 10 1).Lineage.Versions['5.5'].Tint }
 Check 'tint: it is one colour field in the state, and survives a save' {
     $back = $tl | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable -DateKind String
     $back.Lineage.Versions['5.5'].Tint -eq '#FFFFCF4D' -and (Get-VersionDays $back.Lineage.Versions['5.5']) -eq 1 -and (Get-PetStage $back).Name -eq 'hatchling'
@@ -898,6 +966,11 @@ Check 'pips: Invoke-Chime can play later (-DelayMs, through the one-shot timer) 
     $chimeSrc -match 'notes from C, E and G only|Notes from C, E and G only' -and $chimeSrc -match 'under 0\.6 s' -and $chimeSrc -match 'No sound for bad news' -and $chimeSrc -match 'octave means refilled'
 }
 $bodyEvent = Get-FnText $tokSrc 'Invoke-BodyEvent'
+# the eyes (10-10): every path in Step-Eyes that places the pupils itself, or finds the eyes shut, clears EyesKey, so the pointer is
+# looked up again as soon as that look ends (it used to stay on the token's spot after a meal until the mouse moved)
+$eyesFn = [regex]::Match($tokSrc, '(?ms)^function Step-Eyes \{.*?^\}').Value
+$early = @($eyesFn -split "`n" | Where-Object { $_ -match '\breturn\b' -and $_ -notmatch "key -eq \`$script:EyesKey" })
+Check 'eyes: every early return in Step-Eyes clears the pointer cache' { $early.Count -ge 6 -and @($early | Where-Object { $_ -notmatch 'EyesKey = \$null' -and $_.Trim() -ne 'return' }).Count -eq 0 }
 $evCase = { param($name) [regex]::Match($bodyEvent, "(?ms)^        '$name' \{.*?^        \}").Value }       # one case of the event switch
 Check 'turn end (tok.ps1): a short turn squishes, a long one hops and says it pinned for 12 s, the done pip lands on the hop, an error turn has no hop and the falling pip now' {
     $d = & $evCase 'Done'
@@ -1038,7 +1111,7 @@ Check 'the nod (tok.ps1): an edit after two reads dips the lean 6 degrees furthe
 }
 Check 'the day counts (tok.ps1): the 10th reply flags it once per day; the sprout stretches 1 to 1.08 over 1.2 s from its foot with a gold ✦ for 1.2 s, no bubble, no pip, and not on a growing-up or a molt' {
     $al = Get-FnText $tokSrc 'Add-LiveLineage'; $ds = Get-FnText $tokSrc 'Start-DayStretch'; $us = & $evCase 'Usage'
-    $al -match 'Test-DayJustCounted \(Get-ReplyDayCount \$lin \$E\.Usage\.Model \$dk\) \$dk \$script:LastDayKey' -and $al -match '\$script:DayCounted = -not \$molt' -and
+    $al -match 'Test-DayJustCounted \(Get-DayTotal \$lin \$dk\) \$dk \$script:LastDayKey' -and $al -match '\$script:DayCounted = -not \$molt' -and
     $us -match 'if \(\$script:DayCounted\)' -and $us -match '-not \$grew -and -not \$script:Passing' -and $us -match 'Start-DayStretch' -and
     $ds -match 'ui\.SproutScale\.BeginAnimation' -and $ds -match '\(1, 1\.08, \[TimeSpan\]::FromMilliseconds\(600\)\)' -and $ds -match 'AutoReverse = \$true' -and $ds -match "Show-Fx '✦' '#FFE0A030'" -and $ds -match 'AddMilliseconds\(1200\)' -and $ds -notmatch 'Say |Invoke-Chime' -and
     ($ds -split "`n" | Where-Object { $_ -match 'Say |Invoke-Chime' }).Count -eq 0

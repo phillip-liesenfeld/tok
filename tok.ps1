@@ -51,6 +51,28 @@ Add-Type -Namespace Tok -Name Native -MemberDefinition @'
 [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
 [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int size);
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct MONITORINFOEX { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szDevice; }
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct DEVMODE {
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+    public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+    public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+    public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+    public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight; }
+[DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr m, ref MONITORINFOEX mi);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
+// The app's visible frame (DWM: physical pixels), its monitor's rect and work area (this process's coordinates), and the
+// monitor's physical position and size, so Get-PerchTarget can map the frame over (ConvertTo-LogicalRect). pw = 0: no mapping.
+public static bool PerchInfo(IntPtr h, out RECT frame, out RECT mon, out RECT work, out int px, out int py, out int pw, out int ph) {
+    mon = new RECT(); work = new RECT(); px = 0; py = 0; pw = 0; ph = 0;
+    if (DwmGetWindowAttribute(h, 9, out frame, 16) != 0) return false;
+    MONITORINFOEX mi = new MONITORINFOEX(); mi.cbSize = Marshal.SizeOf(typeof(MONITORINFOEX));
+    if (!GetMonitorInfo(MonitorFromWindow(h, 2), ref mi)) return false;
+    mon = mi.rcMonitor; work = mi.rcWork;
+    DEVMODE dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+    if (EnumDisplaySettings(mi.szDevice, -1, ref dm)) { px = dm.dmPositionX; py = dm.dmPositionY; pw = dm.dmPelsWidth; ph = dm.dmPelsHeight; }
+    return true;
+}
 '@
 
 # ---------------------------------------------------------------- the look
@@ -958,10 +980,10 @@ function Add-LiveLineage($E) {
     if ($E.Usage.Ts -le [datetime]::Parse($lin.ScannedUtc, $null, 'RoundtripKind').ToUniversalTime()) { return }
     $before = (Get-PetStage $script:State).Name       # the old Tok's stage, before the new generation starts at day 0
     $molt = Add-LineageReply $lin $E.Usage.Model $E.Usage.Ts $E.Usage.Out $E.Project
-    # The day counts: this reply took today's count for its model version to exactly 10 (Add-LineageReply keeps the per-day counts
+    # The day counts: this reply took today's count, every model together, to exactly 10 (Add-LineageReply keeps the per-day counts
     # that make a day count toward age). Once per day; a molt has its own piece, so it does not also stretch.
     $dk = $E.Usage.Ts.ToLocalTime().ToString('yyyy-MM-dd')
-    if (Test-DayJustCounted (Get-ReplyDayCount $lin $E.Usage.Model $dk) $dk $script:LastDayKey) { $script:LastDayKey = $dk; $script:DayCounted = -not $molt }
+    if (Test-DayJustCounted (Get-DayTotal $lin $dk) $dk $script:LastDayKey) { $script:LastDayKey = $dk; $script:DayCounted = -not $molt }
     # The first generation is just the egg's first day (Step-Growth hatches it); only a later one is a passing-on.
     if ($molt -and @($lin.Generations).Count -gt 1) {
         $name = Get-LineageName $lin
@@ -1041,11 +1063,16 @@ function Get-PerchTarget {
     if ($procId -eq $script:MyPid) { return $script:Target ?? $corner }
     $sb = [System.Text.StringBuilder]::new(256); $null = [Tok.Native]::GetClassName($h, $sb, 256)
     if ($sb.ToString() -in $script:IgnoreClasses -or [Tok.Native]::IsIconic($h)) { return $script:Target ?? $corner }
-    $r = [Tok.Native+RECT]::new()
-    if ([Tok.Native]::DwmGetWindowAttribute($h, 9, [ref]$r, 16) -ne 0) { return $corner }
-    $left = $r.Left / $script:Dpi; $top = $r.Top / $script:Dpi; $right = [math]::Min($r.Right / $script:Dpi, $work.Right); $bottom = [math]::Min($r.Bottom / $script:Dpi, $work.Bottom)
+    # the app's own monitor, not the main one (10-10: on an ultrawide above the laptop, the main screen's edge put Tok mid-screen)
+    $r = [Tok.Native+RECT]::new(); $mon = [Tok.Native+RECT]::new(); $wk = [Tok.Native+RECT]::new(); [int]$px = 0; [int]$py = 0; [int]$pw = 0; [int]$ph = 0
+    if (-not [Tok.Native]::PerchInfo($h, [ref]$r, [ref]$mon, [ref]$wk, [ref]$px, [ref]$py, [ref]$pw, [ref]$ph)) { return $corner }
+    $f = ConvertTo-LogicalRect $r $mon $px $py $pw $ph
+    $d = $script:Dpi
+    $wl = $wk.Left / $d; $wr = $wk.Right / $d; $wb = $wk.Bottom / $d
+    $corner = Get-CornerPoint $wr ($wb + 16)
+    $left = $f.Left / $d; $top = $f.Top / $d; $right = [math]::Min($f.Right / $d, $wr); $bottom = [math]::Min($f.Bottom / $d, $wb)
     if (($right - $left) -lt 300 -or ($bottom - $top) -lt 260) { return $corner }
-    $script:TargetLeft = [math]::Max($left, $work.Left)
+    $script:TargetLeft = [math]::Max($left, $wl)
     Get-CornerPoint $right $bottom
 }
 
@@ -1063,7 +1090,7 @@ function Step-Move {
 
 # ---------------------------------------------------------------- eyes + minions
 function Step-Eyes {
-    if ($script:Passing -or $script:Mood -in 'sleep', 'coma', 'egg' -or $ui.EyeL.Visibility -ne 'Visible') { return }
+    if ($script:Passing -or $script:Mood -in 'sleep', 'coma', 'egg' -or $ui.EyeL.Visibility -ne 'Visible') { $script:EyesKey = $null; return }     # eyes shut: look again on opening
     $now = [datetime]::UtcNow
     if ($script:Override -eq 'dizzy' -and $now -lt $script:OverrideUntil) {
         $t = $script:Tick * 0.45
@@ -1073,8 +1100,10 @@ function Step-Eyes {
         return
     }
     # eating: eyes on the token; a minion coming home: eyes follow it
-    if ($script:Override -eq 'eat1') { $ui.PupilL.X = 4 * $script:PupilK; $ui.PupilL.Y = 3 * $script:PupilK; $ui.PupilR.X = $ui.PupilL.X; $ui.PupilR.Y = $ui.PupilL.Y; return }
-    if ($script:Override -in 'home1', 'home3' -and $script:HomeLook) { $ui.PupilL.X = $script:HomeLook[0] * $script:PupilK; $ui.PupilL.Y = $script:HomeLook[1] * $script:PupilK; $ui.PupilR.X = $ui.PupilL.X; $ui.PupilR.Y = $ui.PupilL.Y; return }
+    # Every look that places the pupils itself clears EyesKey, so the pointer is looked up again the moment it ends (10-10: after a
+    # meal or a homecoming the eyes stayed on the token's spot until the mouse moved).
+    if ($script:Override -eq 'eat1') { $ui.PupilL.X = 4 * $script:PupilK; $ui.PupilL.Y = 3 * $script:PupilK; $ui.PupilR.X = $ui.PupilL.X; $ui.PupilR.Y = $ui.PupilL.Y; $script:EyesKey = $null; return }
+    if ($script:Override -in 'home1', 'home3' -and $script:HomeLook) { $ui.PupilL.X = $script:HomeLook[0] * $script:PupilK; $ui.PupilL.Y = $script:HomeLook[1] * $script:PupilK; $ui.PupilR.X = $ui.PupilL.X; $ui.PupilR.Y = $ui.PupilL.Y; $script:EyesKey = $null; return }
     # the one time Tok looks straight at you: when it needs you
     if ($script:Override -eq 'needs' -and $now -lt $script:OverrideUntil) { $ui.PupilL.X = 0; $ui.PupilL.Y = -1; $ui.PupilR.X = 0; $ui.PupilR.Y = -1; $script:EyesKey = $null; return }
     $otherLook = [bool]($script:Override -and $now -lt $script:OverrideUntil)
