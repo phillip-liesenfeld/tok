@@ -11,5 +11,5 @@ $null = New-Item -ItemType Directory -Force $dir
 $msg = [ordered]@{ text = ($Text -join ' '); mood = $Mood; silent = [bool]$Silent; at = [datetime]::UtcNow.ToString('o') }
 Add-Content -LiteralPath (Join-Path $dir 'inbox.jsonl') -Value ($msg | ConvertTo-Json -Compress) -Encoding utf8
 if (-not (Get-Process pwsh -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*tok.ps1*' })) {
-    Write-Warning 'Tok is not running; the message will wait in the inbox. Start it with Start-Tok.vbs.'
+    Write-Warning 'Tok is not running; the message will wait in the inbox. Start it from the Start menu.'
 }

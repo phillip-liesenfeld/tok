@@ -3,7 +3,7 @@
 #   .\private.ps1                 on, until you turn it off
 #   .\private.ps1 -Minutes 30     on for 30 minutes
 #   .\private.ps1 -Off            back to normal
-#   .\private.ps1 -Quit           close Tok entirely (start it again with Start-Tok.vbs)
+#   .\private.ps1 -Quit           close Tok entirely (start it again from the Start menu)
 #   .\private.ps1 -Status         is it private right now?
 param(
     [double]$Minutes = 0,

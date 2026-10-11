@@ -149,6 +149,8 @@ $xaml.SelectNodes('//*[@*[local-name()="Name"]]') | ForEach-Object {
     $ui[$n.Value] = $window.FindName($n.Value)
 }
 $window.ShowActivated = $false
+$tokIco = Join-Path $PSScriptRoot 'tok.ico'      # Task Manager's row for the window (the process itself stays PowerShell 7)
+if (Test-Path -LiteralPath $tokIco) { try { $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]$tokIco) } catch { } }
 
 # ---------------------------------------------------------------- state
 $script:Config = Get-BodyConfig
@@ -759,7 +761,7 @@ function Set-Private([bool]$On, [double]$Minutes = 0, [string]$Why = '') {
     else { $c.Private = $false; $c.PrivateUntil = $null }
     Save-PetJson $c 'config.json'
     $c.Follow = $script:Config.Follow; $script:Config = $c
-    $script:PrivateItem.IsChecked = [bool]$c.Private
+    $script:PrivateItem.IsChecked = Test-Private      # ticked for a timed stretch too (auto-private), so one click ends it
     if ($On) {
         $script:Recent.Clear()          # no dreams about what came before, either
         $script:BubbleQueue.Clear()     # and drop anything already queued
@@ -775,6 +777,7 @@ function Set-Private([bool]$On, [double]$Minutes = 0, [string]$Why = '') {
 # Called from the slow loop: notices when a timed private stretch ends.
 function Step-Private {
     $now = Test-Private
+    if ($script:PrivateItem -and $script:PrivateItem.IsChecked -ne $now) { $script:PrivateItem.IsChecked = $now }      # a timer ran out, or private.ps1
     if ($script:WasPrivate -and -not $now) {
         $script:WasPrivate = $false
         Say '🕶 → 👀 OK, back to normal.' 3
@@ -1650,7 +1653,7 @@ $script:SoundItem = Add-MenuItem 'Sound' {
     Save-ConfigKey 'Sound' $script:SoundItem.IsChecked
     if ($script:SoundItem.IsChecked) { Invoke-Chime 'done' -Force }
 } $true ($script:Config.Sound -ne $false) 'a pip when Claude needs you or is done' $settings
-$script:PrivateItem = Add-MenuItem 'Private mode' { Set-Private $script:PrivateItem.IsChecked 0 'menu' } $true ([bool]$script:Config.Private) 'sunglasses on, no names in bubbles' $settings
+$script:PrivateItem = Add-MenuItem 'Private mode' { Set-Private $script:PrivateItem.IsChecked 0 'menu' } $true (Test-Private) 'sunglasses on, no names in bubbles' $settings
 $script:LiveItem = Add-MenuItem 'Exact usage' {
     $on = $script:LiveItem.IsChecked
     Save-ConfigKey 'LiveUsage' $on
@@ -1660,7 +1663,7 @@ $script:LiveItem = Add-MenuItem 'Exact usage' {
 } $true ($script:Config.LiveUsage -eq $true) "real numbers from Anthropic,`nwith Claude Code's own login" $settings
 $script:FollowItem = Add-MenuItem 'Follow the active app' { Save-ConfigKey 'Follow' $script:FollowItem.IsChecked } $true ([bool]$script:Config.Follow) 'sit in its corner' $settings
 $script:StartupItem = Add-MenuItem 'Start with Windows' {
-    try { Set-StartWithWindows $script:StartupItem.IsChecked (Join-Path $PSScriptRoot 'Start-Tok.vbs'); Write-BodyLog "start with windows: $($script:StartupItem.IsChecked)" }
+    try { Set-StartWithWindows $script:StartupItem.IsChecked $PSScriptRoot; Write-BodyLog "start with windows: $($script:StartupItem.IsChecked)" }
     catch { Write-BodyLog "start with windows failed: $($_.Exception.Message)"; $script:StartupItem.IsChecked = Test-StartWithWindows }
 } $true (Test-StartWithWindows) 'a shortcut in your Startup folder' $settings
 $null = $menu.Items.Add([Windows.Controls.Separator]::new())

@@ -1,0 +1,14 @@
+# Only Tok's own files belong in the public repo (Documents\tok is the working repo). Everything else is ignored.
+/*
+!/.gitattributes
+!/.gitignore
+!/LICENSE
+!/README.md
+!/*.ps1
+!/Start-Tok.vbs
+!/tok.ico
+!/lib/
+!/skills/
+!/docs/
+!/tests/
+!/tools/

@@ -103,22 +103,32 @@ function New-MenuLabel([string]$Text) {
     [Windows.Controls.MenuItem]@{ Header = $tb; IsHitTestVisible = $false; Focusable = $false }
 }
 
-# ---------------------------------------------------------------- Start with Windows
-# A shortcut to Start-Tok.vbs in the user's Startup folder (shell:startup). Nothing else is touched.
+# ---------------------------------------------------------------- shortcuts and Start with Windows
+# A shortcut that starts the Tok in $TokDir with no window. conhost --headless hosts pwsh without drawing a console: a shortcut
+# straight to pwsh opens a Windows Terminal window for a moment, and the old Start-Tok.vbs needs VBScript, which Windows is
+# phasing out. Checked 10-10 by watching for new windows during the launch, with Windows Terminal as the default terminal.
+function Set-TokShortcut([string]$Path, [string]$TokDir) {
+    $null = New-Item -ItemType Directory -Force (Split-Path $Path)
+    $sh = New-Object -ComObject WScript.Shell
+    try {
+        $s = $sh.CreateShortcut($Path)
+        $s.TargetPath = Join-Path $env:WINDIR 'System32\conhost.exe'
+        $s.Arguments = "--headless pwsh -STA -NoProfile -WindowStyle Hidden -File ""$(Join-Path $TokDir 'tok.ps1')"""
+        $s.WorkingDirectory = $TokDir
+        $s.Description = 'Tok, a small desktop creature that is Claude'
+        $ico = Join-Path $TokDir 'tok.ico'      # tools\icon.ps1 makes it; without it the shortcut shows conhost's icon
+        if (Test-Path -LiteralPath $ico) { $s.IconLocation = "$ico,0" }
+        $s.Save()
+    } finally { $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($sh) }
+}
+
+# The Startup folder's Tok.lnk (shell:startup). Nothing else is touched.
 function Get-StartupShortcutPath([string]$StartupDir = [Environment]::GetFolderPath('Startup')) { Join-Path $StartupDir 'Tok.lnk' }
 
 function Test-StartWithWindows([string]$StartupDir = [Environment]::GetFolderPath('Startup')) { Test-Path -LiteralPath (Get-StartupShortcutPath $StartupDir) }
 
-function Set-StartWithWindows([bool]$On, [string]$Launcher, [string]$StartupDir = [Environment]::GetFolderPath('Startup')) {
+function Set-StartWithWindows([bool]$On, [string]$TokDir, [string]$StartupDir = [Environment]::GetFolderPath('Startup')) {
     $lnk = Get-StartupShortcutPath $StartupDir
     if (-not $On) { if (Test-Path -LiteralPath $lnk) { Remove-Item -LiteralPath $lnk -Force }; return }
-    $sh = New-Object -ComObject WScript.Shell
-    try {
-        $s = $sh.CreateShortcut($lnk)
-        $s.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
-        $s.Arguments = """$Launcher"""
-        $s.WorkingDirectory = Split-Path $Launcher
-        $s.Description = 'Tok, a small desktop creature that is Claude'
-        $s.Save()
-    } finally { $null = [Runtime.InteropServices.Marshal]::ReleaseComObject($sh) }
+    Set-TokShortcut $lnk $TokDir
 }

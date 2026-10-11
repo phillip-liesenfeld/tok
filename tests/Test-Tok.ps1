@@ -1177,15 +1177,35 @@ Check 'menu: Stats · Today · Family | Settings ▸ (Chatter, Sound, Private, F
     $order -eq 'Stats,Today,Family,|,Settings,Chatter,|,Sound,Private mode,Exact usage,Follow the active app,Start with Windows,|,Pet,|,Goodbye' -and
     $mb -match '(?s)Add-MenuItem \$mode\[1\] \{.*?\} \$false \(\$script:Config\.Chatter -eq \$mode\[0\]\) \$mode\[2\] \$settings'      # the three chatter levels sit under the label
 }
-Check 'start with Windows: a shortcut to Start-Tok.vbs in the Startup folder, added and removed (a temp folder here)' {
+Check 'private: the Settings tick follows timed (auto) private too, so one click ends it, and it clears when the timer runs out' {
+    (Get-FnText $tokSrc 'Set-Private') -match '\$script:PrivateItem\.IsChecked = Test-Private' -and
+    (Get-FnText $tokSrc 'Step-Private') -match '\$script:PrivateItem\.IsChecked = \$now' -and
+    $tokSrc -match "Add-MenuItem 'Private mode' \{ Set-Private \`$script:PrivateItem\.IsChecked 0 'menu' \} \`$true \(Test-Private\)"
+}
+Check 'start with Windows: a no-window shortcut (conhost --headless pwsh) to this Tok in the Startup folder, added and removed (a temp folder here)' {
     $sd = Join-Path ([IO.Path]::GetTempPath()) "tok-startup-$PID"; $null = New-Item -ItemType Directory -Force $sd
     try {
         $off = -not (Test-StartWithWindows $sd)
-        Set-StartWithWindows $true (Join-Path $root 'Start-Tok.vbs') $sd
+        Set-StartWithWindows $true $root $sd
         $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Get-StartupShortcutPath $sd))
-        $on = (Test-StartWithWindows $sd) -and $lnk.TargetPath -match 'wscript\.exe$' -and $lnk.Arguments -match 'Start-Tok\.vbs'
+        $on = (Test-StartWithWindows $sd) -and $lnk.TargetPath -match '\\conhost\.exe$' -and
+            $lnk.Arguments -eq "--headless pwsh -STA -NoProfile -WindowStyle Hidden -File ""$root\tok.ps1""" -and $lnk.WorkingDirectory -eq $root -and $lnk.IconLocation -eq "$root\tok.ico,0"
         Set-StartWithWindows $false '' $sd
-        $off -and $on -and -not (Test-StartWithWindows $sd) -and @(Get-ChildItem $sd).Count -eq 0
+        $off -and $on -and -not (Test-StartWithWindows $sd) -and @(Get-ChildItem $sd).Count -eq 0 -and
+            $tokSrc -match 'Set-StartWithWindows \$script:StartupItem\.IsChecked \$PSScriptRoot'
+    } finally { Remove-Item $sd -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Check 'shortcuts: which Tok a shortcut starts, new (tok.ps1) or 1.0 (Start-Tok.vbs); this copy''s, another''s, a deleted one''s' {
+    $sd = Join-Path ([IO.Path]::GetTempPath()) "tok-lnk-$PID"; $null = New-Item -ItemType Directory -Force $sd
+    try {
+        $sh = New-Object -ComObject WScript.Shell
+        $old = $sh.CreateShortcut("$sd\old.lnk"); $old.TargetPath = "$env:WINDIR\System32\wscript.exe"; $old.Arguments = """$root\Start-Tok.vbs"""; $old.Save()
+        $gone = $sh.CreateShortcut("$sd\gone.lnk"); $gone.TargetPath = "$env:WINDIR\System32\wscript.exe"; $gone.Arguments = """C:\Nowhere\tok-1.0\Start-Tok.vbs"""; $gone.Save()
+        $other = $sh.CreateShortcut("$sd\other.lnk"); $other.TargetPath = "$env:WINDIR\notepad.exe"; $other.Arguments = 'x.txt'; $other.Save()
+        Set-TokShortcut "$sd\new.lnk" $root
+        (Get-TokShortcutDir "$sd\new.lnk") -eq $root -and (Get-TokShortcutDir "$sd\old.lnk") -eq $root -and (Get-TokShortcutDir "$sd\other.lnk") -eq $null -and
+        (Get-TokShortcutDir "$sd\nope.lnk") -eq $null -and (Test-TokShortcut "$sd\new.lnk" $root) -and (Test-TokShortcut "$sd\old.lnk" "$root\") -and
+        -not (Test-TokShortcut "$sd\gone.lnk" $root) -and (Test-StaleTokShortcut "$sd\gone.lnk") -and -not (Test-StaleTokShortcut "$sd\new.lnk") -and -not (Test-StaleTokShortcut "$sd\other.lnk")
     } finally { Remove-Item $sd -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
@@ -1264,6 +1284,52 @@ Check 'hook setup: a broken settings file is never written over' {
     try { $null = Add-TokHook $sp $np } catch { $threw = $true }
     $threw -and (Get-Content $sp -Raw).Trim() -eq '{ not json'
 }
+Check 'hook setup: a new copy takes over an older copy''s Tok hook (one Tok hook after), and leaves other hooks alone' {
+    $oldNp = 'C:\Apps\tok-1.0\notify.ps1'
+    Set-Content $sp '{"hooks":{"Notification":[{"matcher":"idle_prompt","hooks":[{"type":"command","command":"pwsh -NoProfile -File \"C:/x/notify.ps1\""}]}]}}'
+    $null = Add-TokHook $sp $oldNp
+    $others = @(Get-OtherTokHooks $sp $np)
+    $r = Add-TokHook $sp $np; $s = Get-Content $sp -Raw | ConvertFrom-Json -AsHashtable
+    $tokHooks = @(@($s.hooks.Notification) | ForEach-Object { Get-TokHookNotifyPath $_ } | Where-Object { $_ })
+    $others.Count -eq 1 -and $others[0] -eq $oldNp -and $r -eq 'moved' -and $tokHooks.Count -eq 1 -and $tokHooks[0] -eq $np -and
+    @($s.hooks.Notification).Count -eq 2 -and @($s.hooks.Notification)[0].matcher -eq 'idle_prompt' -and (Add-TokHook $sp $np) -eq 'already' -and @(Get-OtherTokHooks $sp $np).Count -eq 0
+}
+Check 'hook setup: uninstall also clears a Tok hook whose notify.ps1 is gone, but not a live copy''s' {
+    $live = Join-Path $st 'live\notify.ps1'; $null = New-Item -ItemType Directory -Force (Split-Path $live); 'x' | Set-Content $live
+    Set-Content $sp '{}'
+    $e = { param($n) [ordered]@{ matcher = $script:TokHookMatcher; hooks = @([ordered]@{ type = 'command'; command = (Get-TokHookCommand $n) }) } }
+    $set = [ordered]@{ hooks = [ordered]@{ Notification = @((& $e 'C:\Gone\tok\notify.ps1'), (& $e $live), (& $e $np)) } }
+    Save-ClaudeSettings $set $sp
+    $r = Remove-TokHook $sp $np; $s = Get-Content $sp -Raw | ConvertFrom-Json -AsHashtable
+    $left = @(@($s.hooks.Notification) | ForEach-Object { Get-TokHookNotifyPath $_ })
+    $r -eq 'removed' -and $left.Count -eq 1 -and $left[0] -eq $live
+}
+Check 'skill setup: a new copy takes over an older copy''s skill; a stale one is cleared on uninstall; someone else''s is never touched' {
+    $cd = Join-Path $st 'claude'; $sk = Get-TokSkillPath $cd
+    $a = Join-Path $st 'copyA'; $b = Join-Path $st 'copyB'
+    foreach ($d in $a, $b) { $null = New-Item -ItemType Directory -Force "$d\skills\tok-private"; Copy-Item "$root\skills\tok-private\SKILL.md" "$d\skills\tok-private\"; 'x' | Set-Content "$d\tok.ps1" }
+    $r1 = Add-TokSkill $cd $a; $r2 = Add-TokSkill $cd $b; $from = Get-TokSkillDir $sk
+    $keepLive = (Remove-TokSkill $cd $a) -eq 'none' -and (Test-Path $sk)      # B's skill, and B still holds a Tok
+    Remove-Item "$b\tok.ps1"
+    $staleGone = (Remove-TokSkill $cd $a) -eq 'removed' -and -not (Test-Path $sk)
+    $null = New-Item -ItemType Directory -Force (Split-Path $sk); 'mine' | Set-Content $sk
+    $r1 -eq 'added' -and $r2 -eq 'moved' -and $from -eq $b -and $keepLive -and $staleGone -and (Add-TokSkill $cd $a) -eq 'theirs' -and
+    (Remove-TokSkill $cd $a) -eq 'none' -and (Get-Content $sk -Raw).Trim() -eq 'mine' -and (Get-TokSkillDir $sk) -eq $null
+}
+Check 'Settings > Apps: the entry is written per user (a throwaway key here) and taken out only by its own copy' {
+    $key = "HKCU:\Software\TokTest-$PID\Uninstall\Tok"
+    try {
+        $live = Join-Path $st 'live'
+        Register-TokApp $root $key; $v = Get-ItemProperty -LiteralPath $key
+        $ok = $v.DisplayName -eq 'Tok' -and $v.DisplayVersion -eq $script:TokVersion -and $v.InstallLocation -eq $root -and $v.NoModify -eq 1 -and $v.NoRepair -eq 1 -and $v.DisplayIcon -eq "$root\tok.ico" -and
+            $v.UninstallString -eq "pwsh.exe -NoProfile -ExecutionPolicy Bypass -File ""$root\Uninstall.ps1"" -FromSettings -AppsKey ""$key"""
+        'x' | Set-Content "$live\tok.ps1"
+        Register-TokApp $live $key
+        $notMine = (Unregister-TokApp $root $key) -eq 'none' -and (Test-Path $key)
+        $mine = (Unregister-TokApp $live $key) -eq 'removed' -and -not (Test-Path $key) -and (Unregister-TokApp $live $key) -eq 'none'
+        $ok -and $notMine -and $mine
+    } finally { Remove-Item "HKCU:\Software\TokTest-$PID" -Recurse -Force -ErrorAction SilentlyContinue }
+}
 Check 'uninstall: the data folder goes only when everything in it is Tok''s' {
     $d = Join-Path $st 'data'; $null = New-Item -ItemType Directory -Force "$d\sounds"
     'x' | Set-Content "$d\state.json"; 'x' | Set-Content "$d\tok.log"; 'x' | Set-Content "$d\state.json.tmp"
@@ -1271,9 +1337,15 @@ Check 'uninstall: the data folder goes only when everything in it is Tok''s' {
     'x' | Set-Content "$d\notes.txt"
     $clean -and (Get-ForeignDataItems $d) -join ',' -eq 'notes.txt' -and (Get-ForeignDataItems (Join-Path $st 'nope')).Count -eq 0
 }
+Check 'update: Update.ps1 pulls fast-forward only, re-runs Install, never kills, and a zip copy only says where to get the new one' {
+    $up = Get-Content (Join-Path $root 'Update.ps1') -Raw
+    $up -match 'pull --ff-only' -and $up -match "Install\.ps1'\), '-NoStart'" -and $up -match 'Stop-Tok \$script:DataDir' -and $up -notmatch 'Stop-Process|Invoke-WebRequest|Invoke-RestMethod' -and
+    $up -match "can't update itself"
+}
 Check 'install and uninstall: the scripts exist, Install checks PowerShell 7 with the winget hint, Uninstall never kills' {
     $i = Get-Content (Join-Path $root 'Install.ps1') -Raw; $u = Get-Content (Join-Path $root 'Uninstall.ps1') -Raw
     $i -match 'winget install Microsoft\.PowerShell' -and $i -match 'PSVersion\.Major -lt 7' -and $i -match 'Unblock-File' -and $i -match "Join-Path \`$ProgramsDir 'Tok\.lnk'" -and
+    $i -match 'Register-TokApp' -and $i -match 'Get-OtherTokHooks' -and $i -notmatch 'wscript' -and $u -match 'Unregister-TokApp' -and $u -match 'Read-Host' -and $u -match 'IsInputRedirected' -and
     $u -match 'Stop-Tok \$script:DataDir' -and $u -notmatch 'Stop-Process' -and $u -match 'Get-ForeignDataItems' -and $u -match 'Remove-TokHook' -and (Get-FnText (Get-Content (Join-Path $root 'lib\Setup.ps1') -Raw) 'Stop-Tok') -notmatch 'Stop-Process'
 }
 Remove-Item $st -Recurse -Force
