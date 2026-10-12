@@ -6,6 +6,8 @@ It stands for Claude. It sits in the corner of the app you're using and watches 
 
 Its belly is a lantern. The glow rises as you use your **5-hour window**: the usage limit Claude gives you, which resets 5 hours after the window starts. At the limit Tok puts on a nightcap and sleeps until the reset. Claude Code is paused, and Tok rests with it.
 
+> **For exact numbers, turn on Exact usage:** right-click Tok › Settings › Exact usage. It's off at first because it's Tok's one network call (to Anthropic, with Claude Code's own login; [what it sends](#what-tok-reads-and-sends)). Without it, Tok uses Claude Code's cached numbers or an estimate.
+
 ![Tok working: its eyes follow what Claude reads, then it nods as Claude writes](docs/tok-working.gif)
 
 ## What it is, and isn't
@@ -56,6 +58,8 @@ Turn it on from Settings, or with `private.ps1` (`-Minutes 30`, `-Off`, `-Quit`)
 ## Install
 
 You need Windows 10 or 11, [Claude Code](https://claude.com/claude-code), PowerShell 7 and git. If you don't have PowerShell 7, Install says so and stops; get it with `winget install Microsoft.PowerShell`.
+
+First time? [**docs/SETUP.md**](docs/SETUP.md) walks you through it step by step, with fixes for what can go wrong.
 
 In a folder where Tok can stay, like `Documents`:
 

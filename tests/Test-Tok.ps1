@@ -1,4 +1,4 @@
-﻿# Test-Tok.ps1 - checks the parts that don't need a window. Run: pwsh -File tests\Test-Tok.ps1
+# Test-Tok.ps1 - checks the parts that don't need a window. Run: pwsh -File tests\Test-Tok.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot
 . (Join-Path $root 'lib\Transcripts.ps1')
@@ -185,11 +185,11 @@ Check 'version: junk is null' { -not (Get-ModelVersion '<synthetic>') -and -not 
 $lin = New-Lineage; $t0 = [datetime]::new(2026, 9, 16, 15, 0, 0, [DateTimeKind]::Utc)      # mid-afternoon UTC: one local day wherever the tests run
 $molts = @()
 for ($i = 0; $i -lt 12; $i++) { $molts += Add-LineageReply $lin 'claude-opus-5' $t0.AddMinutes($i) 10 'sample-app' }
-Check 'lineage: the first counted day (10 messages) makes the first generation, once' { @($lin.Generations).Count -eq 1 -and @($molts | Where-Object { $_ }).Count -eq 1 -and (Get-LineageName $lin) -eq 'Tok I' -and -not $lin.Versions['5'].HatchDay }
+Check 'lineage: the first counted day (10 messages) makes the first generation, once, named just Tok' { @($lin.Generations).Count -eq 1 -and @($molts | Where-Object { $_ }).Count -eq 1 -and (Get-LineageName $lin) -ceq 'Tok' -and (Get-LineageName $lin 0) -ceq 'Tok' -and -not $lin.Versions['5'].HatchDay }
 for ($d = 5; $d -le 6; $d++) { for ($i = 0; $i -lt 12; $i++) { $null = Add-LineageReply $lin 'claude-opus-5-5' $t0.AddDays($d).AddMinutes($i) } }
 Check 'lineage: two days with a new model is still a trial' { @($lin.Generations).Count -eq 1 }
 $m = @(for ($i = 0; $i -lt 10; $i++) { Add-LineageReply $lin 'claude-sonnet-5-5' $t0.AddDays(7).AddMinutes($i) }) | Where-Object { $_ }
-Check 'lineage: other family, same version, counts toward 5.5; its third day makes it a generation' { "$m" -eq '5.5' -and (Get-LineageName $lin) -eq 'Tok II' }
+Check 'lineage: other family, same version, counts toward 5.5; its third day makes it a generation; the first becomes Tok I' { "$m" -eq '5.5' -and (Get-LineageName $lin) -ceq 'Tok II' -and (Get-LineageName $lin 0) -ceq 'Tok I' }
 Check 'lineage: a new generation is a day old on its hatch day (the settling days were its parent''s)' { $lin.Versions['5.5'].HatchDay -eq $t0.AddDays(7).ToLocalTime().ToString('yyyy-MM-dd') -and (Get-VersionDays $lin.Versions['5.5']) -eq 1 }
 for ($i = 0; $i -lt 40; $i++) { $null = Add-LineageReply $lin 'claude-haiku-4-5-20251001' $t0.AddDays(8).AddMinutes($i) }
 for ($d = 9; $d -le 12; $d++) { for ($i = 0; $i -lt 12; $i++) { $null = Add-LineageReply $lin 'claude-opus-5' $t0.AddDays($d).AddMinutes($i) } }
@@ -713,7 +713,7 @@ Check 'hatch line: the real next name, fits the bubble, never "I am back", never
     foreach ($n in 'Tok II', 'Tok III', 'Tok VIII', 'Tok XVIII') { $l = Get-HatchLine $n; if ($l.Length -gt 34 -or $l -cnotmatch "^Hello! I'm $n\.$" -or $l -match '(?i)back|remember|again') { $ok = $false } }
     $ok -and $planE.Line -ceq "Hello! I'm Tok III." -and (Get-HatchPlan 'Tok III').Line -eq $planE.Line -and ((Get-HatchPlan 'Tok III').Phases -join ',') -eq 'hatch'
 }
-Check 'next name comes off the family tree' { (Get-NextLineageName $aged.Lineage) -eq 'Tok III' -and (Get-NextLineageName (New-Lineage)) -eq 'Tok I' }
+Check 'next name comes off the family tree' { (Get-NextLineageName $aged.Lineage) -eq 'Tok III' -and (Get-NextLineageName (New-Lineage)) -ceq 'Tok' }
 # the trigger is once: the reply that makes a new generation returns it, the replies after it return nothing
 $ml = New-Lineage; $mt = [datetime]::new(2026, 10, 1, 12, 0, 0, [DateTimeKind]::Utc); $moltHits = @()
 for ($i = 0; $i -lt 30; $i++) { $moltHits += Add-LineageReply $ml 'claude-opus-5' $mt.AddMinutes($i) 10 'tok' }
@@ -890,6 +890,57 @@ Check 'week: "Fri 9 AM" in local time, minutes only when there are some, and the
 Check 'fresh window: one wording, and a routine reset is silent unless the window was at least 85%' {
     (Get-FreshWindowLine) -eq '🌱 Fresh window. Nothing spent yet.' -and (Test-FreshWindowBubble 0.85) -and (Test-FreshWindowBubble 1.0) -and -not (Test-FreshWindowBubble 0.84) -and -not (Test-FreshWindowBubble 0.2)
 }
+$fr = $t0.AddHours(3)
+Check 'full: 85% once per window, 100% once more, keyed by the reset; a jump past 100% says only the full line' {
+    $a = Get-FullWarn 0.86 $true $fr ''
+    $b = Get-FullWarn 0.99 $true $fr $a.Key
+    $c = Get-FullWarn 1.01 $true $fr $a.Key
+    $a.Line -eq "🏮 86% of the window.`nNearly full." -and -not $b -and $c.Line -eq "🏮 The window's full.`nThe nightcap's next." -and
+    -not (Get-FullWarn 1.3 $true $fr $c.Key) -and -not (Get-FullWarn 0.9 $true $fr $c.Key) -and
+    (Get-FullWarn 1.2 $true $fr '').Key -eq $c.Key -and -not (Get-FullWarn 0.84 $true $fr '') -and -not (Get-FullWarn 0.9 $true $null '') -and
+    (Get-FullWarn 0.9 $true $fr.AddHours(5) $c.Key).Key -ne $a.Key -and (Get-FullWarn 0.9 $true $fr.AddSeconds(20) $a.Key) -eq $null
+}
+Check 'full: the level goes by the shown percent (99.6% is 100%), a guess keeps its "~" and never says "full"; the hover says full at 100%' {
+    (Get-FullWarn 0.996 $true $fr '').Line -eq "🏮 The window's full.`nThe nightcap's next." -and (Get-FullWarn 1.04 $false $fr '').Line -eq "🏮 ~104% of the window.`nThe nightcap's next." -and
+    (Get-FullWarn 0.88 $false $fr '').Line -eq "🏮 ~88% of the window.`nNearly full." -and
+    (Get-StuffedText 0.996) -eq 'full' -and (Get-StuffedText 1.01) -eq 'full' -and (Get-StuffedText 0.9) -eq 'nearly full'
+}
+Check 'full: tok.ps1 warns through Test-FullWarning while stuffed (not on every return to the stuffed look) and the hover uses Get-StuffedText' {
+    $tokSrc = Get-Content (Join-Path $root 'tok.ps1') -Raw
+    $tokSrc -match "if \(\`$mood -eq 'stuffed'\) \{ Test-FullWarning \}" -and $tokSrc -notmatch 'Nearly full\." 6 -Pin' -and $tokSrc -match "'stuffed' \{ Get-StuffedText \`$script:Pct \}" -and
+    (Get-FnText $tokSrc 'Test-FullWarning') -match '\$script:State\.FullWarnKey = \$warn\.Key'
+}
+# the shapes from a real session (10-10, take 2): three background agents, the main turn ending at once, a notification each
+$launch = '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":[{"type":"text","text":"Async agent launched successfully.\nagentId: a6cd73d985fba4cd1 (internal ID)"}]}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a6cd73d985fba4cd1","description":"Review units.py","prompt":"say \"agentId\":\"zzz\" and \"status\":\"async_launched\""}}'
+$notice = '{"type":"user","isSidechain":false,"message":{"role":"user","content":"<task-notification>\n<task-id>a6cd73d985fba4cd1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review units.py\" finished</summary>\n</task-notification>"}}'
+Check 'agents out: an async launch is AgentOut with its id (only from the main session), its notification is AgentBack and not a prompt' {
+    $lo = @(ConvertTo-BodyEvents $launch); $nb = @(ConvertTo-BodyEvents $notice)
+    $lo.Count -eq 1 -and $lo[0].Type -eq 'AgentOut' -and $lo[0].Id -eq 'a6cd73d985fba4cd1' -and @(ConvertTo-BodyEvents $launch $true).Count -eq 0 -and
+    $nb.Count -eq 1 -and $nb[0].Type -eq 'AgentBack' -and $nb[0].Id -eq 'a6cd73d985fba4cd1' -and
+    (Get-TaskNoticeId 'hello <task-notification><task-id>x</task-id>') -eq '' -and
+    @(ConvertTo-BodyEvents '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<task-notification>\n<task-id>b1</task-id>"}]}}')[0].Id -eq 'b1'
+}
+Check 'agents out: a turn end is held while one of its session''s agents is out (young, or its transcript wrote in the last 3 min); a quiet old one is dropped' {
+    $out = @{ a = @{ Session = 's1'; At = $t0.AddMinutes(-2) } }
+    $h1 = Test-AgentsOut $out 's1' @{} $t0
+    $h2 = Test-AgentsOut $out 's2' @{} $t0
+    $out.b = @{ Session = 's1'; At = $t0.AddMinutes(-30) }
+    $h3 = Test-AgentsOut @{ b = $out.b } 's1' @{ b = $t0.AddSeconds(-60) } $t0
+    $h4 = Test-AgentsOut $out 's1' @{ b = $t0.AddMinutes(-4) } $t0
+    $h1 -and -not $h2 -and $h3 -and $h4 -and -not $out.ContainsKey('b') -and $out.ContainsKey('a') -and -not (Test-AgentsOut @{} 's1' $null $t0)
+}
+Check 'agents out: tok.ps1 holds "All yours." in Done and tags main-session events with their transcript' {
+    $tokSrc = Get-Content (Join-Path $root 'tok.ps1') -Raw
+    (Get-FnText $tokSrc 'Step-Life') -match 'if \(-not \$l\.Sub\) \{ \$e\.Session = \$l\.Path \}' -and
+    $tokSrc -match '(?s)Done\+\+.{0,400}Test-AgentsOut \$script:AgentsOut "\$\(\$E\.Session\)" \(Get-AgentSeen\) \$now\) \{ Invoke-Squish 0\.05 120; return \}.{0,200}\$long ='
+}
+Check 'easter egg: one needs-you bubble in 20 opens with "Hey! Listen!", the usual line kept under it; both needs-you paths use it' {
+    $tokSrc = Get-Content (Join-Path $root 'tok.ps1') -Raw
+    (Get-NeedsLine '❓ A question for you' 0.0) -ceq "Hey! Listen!`n❓ A question for you" -and (Get-NeedsLine 'x' 0.049) -ceq "Hey! Listen!`nx" -and
+    (Get-NeedsLine 'x' 0.05) -ceq 'x' -and (Get-NeedsLine 'x' 0.99) -ceq 'x' -and
+    ([regex]::Matches($tokSrc, 'Say \(Get-NeedsLine \$line \$script:Rng\.NextDouble\(\)\) 20 -Pin')).Count -eq 2 -and
+    (Get-FnText $tokSrc 'Invoke-HookNeeds') -match 'Get-NeedsLine'
+}
 Check 'quiet return: more than 6 hours since the last main event, not exactly 6' {
     (Test-QuietReturn $t0.AddHours(-7) $t0) -and (Test-QuietReturn $t0.AddHours(-6).AddSeconds(-1) $t0) -and -not (Test-QuietReturn $t0.AddHours(-6) $t0) -and -not (Test-QuietReturn $t0.AddMinutes(-30) $t0)
 }
@@ -908,7 +959,7 @@ Check 'grammar: the pure lines start with a capital (after any emoji or symbol),
     $gr = [System.Random]::new(11); $texts = [System.Collections.Generic.List[string]]::new()
     foreach ($i in 1..80) { $texts.Add((Get-Dream $gd @() $gr).Text) }
     foreach ($n in 'Edit', 'Read', 'Bash', 'Grep', 'WebFetch', 'Agent', 'AskUserQuestion', 'ExitPlanMode', 'Other') { $texts.Add((Get-PrivateToolLine $n)) }
-    foreach ($s in (Get-StatsText $gd $null), (Get-TodayText $gd), (Get-FamilyText $gd.Lineage $gd.BornUtc), (Get-FreshWindowLine), (Get-WeekWarnLine $t0), (Get-MoltPill 'weird')) { $texts.Add($s) }
+    foreach ($s in (Get-StatsText $gd $null), (Get-TodayText $gd), (Get-FamilyText $gd.Lineage $gd.BornUtc), (Get-FreshWindowLine), (Get-WeekWarnLine $t0), (Get-MoltPill 'weird'), (Get-FullWarn 0.9 $true $t0 '').Line, (Get-FullWarn 1.1 $true $t0 '').Line, (Get-FullWarn 1.1 $false $t0 '').Line) { $texts.Add($s) }
     @($texts | ForEach-Object { $_ -split "`n" } | Where-Object { $_ -cmatch '^[^\p{L}\p{N}]*\p{Ll}' -or $_ -match '\.\.\.|—|\S {2,}\S' }).Count -eq 0 -and (Get-HatchLine 'Tok II') -ceq "Hello! I'm Tok II."
 }
 Check 'the day counts: the 10th main reply of a local day for a version, once per day' {
@@ -1003,7 +1054,7 @@ Check 'hook (tok.ps1): the inbox hands needs lines over; a yes to the tool ends 
     $ri = Get-FnText $tokSrc 'Read-Inbox'; $hn = Get-FnText $tokSrc 'Invoke-HookNeeds'; $tc = & $evCase 'Tool'
     $ri -match "if \(\`$m\.cmd -eq 'needs'\) \{ Invoke-HookNeeds \`$m; continue \}" -and
     $hn -match 'Get-HookNeedsPlan "\$\(\$M\.kind\)" "\$\(\$M\.message\)" \(Test-Waiting \$script:WaitingSince \$now\) \$age \$private' -and
-    $hn -match 'Invoke-NeedsYou' -and $hn -match "Invoke-Chime 'needs'" -and $hn -match '\$script:WaitingSince = \$now' -and $hn -match 'Say \$line 20 -Pin' -and $hn -match 'Get-ProjectTag' -and
+    $hn -match 'Invoke-NeedsYou' -and $hn -match "Invoke-Chime 'needs'" -and $hn -match '\$script:WaitingSince = \$now' -and $hn -match 'Say \(Get-NeedsLine \$line \$script:Rng\.NextDouble\(\)\) 20 -Pin' -and $hn -match 'Get-ProjectTag' -and
     $tc -match "(?s)Test-WaitingAnswered \`$script:WaitingSince \`$now \`$E\.Name\).*?if \(\`$script:Override -eq 'needs'\) \{ \`$script:Override = \`$null; Update-Look \`$script:Mood \}"
 }
 Check 'hook (notify.ps1): one inbox line from stdin, the data folder override honoured, never a failing exit' {
@@ -1068,7 +1119,7 @@ Check 'interrupt: backdating the last event by 30 s with the turn closed ends th
 }
 Check 'waiting (tok.ps1): a question or plan pins its bubble for 20 s (the wave runs 20), keeps the needs pip, and starts the wait' {
     $tc = & $evCase 'Tool'
-    $tc -match "(?s)AskUserQuestion', 'ExitPlanMode'.*?Invoke-Wave|AskUserQuestion', 'ExitPlanMode'.*?Invoke-NeedsYou" -and $tc -match '\$script:WaitingSince = \$now\s+Say \$line 20 -Pin' -and $tc -match "Invoke-Chime 'needs'" -and $tc -notmatch 'Say \$line 8 -Pin' -and
+    $tc -match "(?s)AskUserQuestion', 'ExitPlanMode'.*?Invoke-Wave|AskUserQuestion', 'ExitPlanMode'.*?Invoke-NeedsYou" -and $tc -match '\$script:WaitingSince = \$now\s+Say \(Get-NeedsLine \$line \$script:Rng\.NextDouble\(\)\) 20 -Pin' -and $tc -match "Invoke-Chime 'needs'" -and $tc -notmatch 'Say \$line 8 -Pin' -and
     (Get-FnText $tokSrc 'Invoke-NeedsYou') -match 'Invoke-Wave 20'
 }
 Check 'waiting (tok.ps1): your next prompt, an Esc, Claude moving on, or 30 minutes end it' {

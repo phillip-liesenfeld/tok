@@ -270,6 +270,10 @@ function Test-DeclinedText([string]$Text) { $Text.IndexOf("doesn't want to proce
 # tool use]". It is not a prompt.
 function Test-InterruptText([string]$Text) { "$Text" -match '^\s*\[Request interrupted by user' }
 
+# The task notification Claude Code writes as a user line when a background task (an agent, a shell) finishes:
+# "<task-notification>\n<task-id>a6cd…</task-id>…". Returns the task id ('' for anything else). It is not a prompt.
+function Get-TaskNoticeId([string]$Text) { if ($Text -match '^\s*<task-notification>\s*<task-id>([^<]+)</task-id>') { $Matches[1] } else { '' } }
+
 # The text of a tool_result block (a string, or a list of text blocks).
 function Get-ResultText($Content) {
     if ($Content -is [string]) { return $Content }
@@ -289,6 +293,9 @@ function ConvertTo-BodyEvents([string]$Line, [bool]$FromSubagent = $false, [stri
     if ($Line.IndexOf('"type":"tool_result"') -ge 0 -and $Line.IndexOf('"type":"assistant"') -lt 0) {
         # (a declined tool is not an error: the tool never ran, the user said no)
         if (-not $FromSubagent -and $Line.IndexOf('"is_error":true') -ge 0 -and $Line.IndexOf('"isMeta":true') -lt 0 -and -not (Test-DeclinedText $Line)) { $events.Add(@{ Type = 'Ouch' }) }
+        # an agent sent off in the background: the result's toolUseResult says so ({"isAsync":true,"status":"async_launched",
+        # "agentId":...}); inside the result's own text the quotes are escaped, so neither match can come from there
+        if (-not $FromSubagent -and $Line.IndexOf('"status":"async_launched"') -ge 0 -and $Line -match '"agentId":"([\w-]+)"') { $events.Add(@{ Type = 'AgentOut'; Id = $Matches[1] }) }
         return $events
     }
     try { $j = $Line | ConvertFrom-Json -Depth 64 } catch { return $events }
@@ -331,9 +338,11 @@ function ConvertTo-BodyEvents([string]$Line, [bool]$FromSubagent = $false, [stri
     elseif ($j.type -eq 'user' -and -not $j.isMeta -and -not $FromSubagent) {
         if ($msg.content -is [string]) {
             if (Test-InterruptText $msg.content) { $events.Add(@{ Type = 'Interrupt' }) }
+            elseif (Get-TaskNoticeId $msg.content) { $events.Add(@{ Type = 'AgentBack'; Id = (Get-TaskNoticeId $msg.content) }) }
             elseif ($msg.content -notmatch '^\s*<') { $events.Add(@{ Type = 'Prompt'; Text = $msg.content; Project = $project }) }
         } else {
             foreach ($b in @($msg.content)) {
+                if ($b.type -eq 'text' -and (Get-TaskNoticeId $b.text)) { $events.Add(@{ Type = 'AgentBack'; Id = (Get-TaskNoticeId $b.text) }); break }
                 if ($b.type -eq 'tool_result' -and $b.is_error) { if (-not (Test-DeclinedText (Get-ResultText $b.content))) { $events.Add(@{ Type = 'Ouch' }) }; break }
                 if ($b.type -eq 'text' -and (Test-InterruptText $b.text)) { $events.Add(@{ Type = 'Interrupt' }); break }
                 if ($b.type -eq 'text' -and $b.text -notmatch '^\s*<') { $events.Add(@{ Type = 'Prompt'; Text = "$($b.text)"; Project = $project }); break }

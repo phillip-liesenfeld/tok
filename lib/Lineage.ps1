@@ -171,9 +171,11 @@ function Add-LineageMinion($Lineage, [string]$Model) {
     $rec.Minions[$fam] = 1 + [int]$rec.Minions[$fam]
 }
 
+# An only Tok is just "Tok". Numbers start when the second hatches: then the first is Tok I, as a king becomes "the First"
+# only once there is a Second.
 function Get-LineageName($Lineage, [int]$Index = -1) {
     $n = @($Lineage.Generations).Count
-    if (-not $n) { return 'Tok' }
+    if ($n -le 1) { return 'Tok' }
     $i = if ($Index -lt 0) { $n } else { $Index + 1 }
     "Tok $(ConvertTo-Roman $i)"
 }
@@ -272,7 +274,7 @@ function Get-MoltPill([string]$Model) {
     "$($v.Family.Substring(0, 1).ToUpper())$($v.Family.Substring(1)) $($v.Label)"
 }
 
-function Get-NextLineageName($Lineage) { "Tok $(ConvertTo-Roman (@($Lineage.Generations).Count + 1))" }
+function Get-NextLineageName($Lineage) { $n = @($Lineage.Generations).Count; if (-not $n) { 'Tok' } else { "Tok $(ConvertTo-Roman ($n + 1))" } }
 
 # What the hatch says. It is a descendant: never "I'm back", never a claim to remember. At most 34 characters.
 function Get-HatchLine([string]$Name) { "Hello! I'm $Name." }

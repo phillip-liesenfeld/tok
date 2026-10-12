@@ -478,6 +478,45 @@ function Get-WeekWarnLine([datetime]$ResetUtc) { "🏮 The week's at 90%. It res
 function Get-FreshWindowLine { '🌱 Fresh window. Nothing spent yet.' }
 function Test-FreshWindowBubble([double]$PctBefore) { $PctBefore -ge 0.85 }
 
+# The window filling up: one word per window at 85% and one at 100%, keyed by the window's reset time (Get-WeekKey) and kept in
+# the state. It said "100% of the window. Nearly full." on 10-10 and again after every turn end, since every return to the stuffed
+# look said it. The level goes by the shown (rounded) percent; a jump straight past 100% says only the full line, and a guess
+# says its number with "~" rather than "full". Asleep (the nightcap) still waits for Claude Code's own limit message.
+function Get-FullWarn([double]$Pct, [bool]$Real, $ResetUtc, [string]$SavedKey) {
+    $shown = [math]::Round($Pct * 100)
+    if (-not $ResetUtc -or $shown -lt 85) { return $null }
+    $level = if ($shown -ge 100) { 100 } else { 85 }
+    $wk = Get-WeekKey ([datetime]$ResetUtc)
+    if ($SavedKey -in "$wk/100", "$wk/$level") { return $null }
+    $line = if ($level -eq 100 -and $Real) { "🏮 The window's full.`nThe nightcap's next." }
+            elseif ($level -eq 100) { "🏮 ~$shown% of the window.`nThe nightcap's next." }
+            else { "🏮 $(if (-not $Real) { '~' })$shown% of the window.`nNearly full." }
+    @{ Key = "$wk/$level"; Line = $line }
+}
+# An easter egg (10-11): now and then a needs-you bubble opens with Navi's line from Ocarina of Time. One in 20, from
+# a uniform draw in [0, 1); the usual line stays under it, so the bubble still says what Claude wants.
+$script:ListenOdds = 20
+function Get-NeedsLine([string]$Line, [double]$U) { if ($U -lt 1.0 / $script:ListenOdds) { "Hey! Listen!`n$Line" } else { $Line } }
+
+# The hover's word for the stuffed look: "full" once the shown percent reaches 100.
+function Get-StuffedText([double]$Pct) { if ([math]::Round($Pct * 100) -ge 100) { 'full' } else { 'nearly full' } }
+
+# Minions sent out in the background (an Agent call with run_in_background): Claude Code ends the main turn at once and wakes it
+# with a task notification as each one finishes, so a turn end while one is still out is not the hand-over ("All yours." with
+# three of them working, take 2 on 10-10). $Out: agent id -> @{ Session; At }, from the launch to its notification. One counts
+# while it is young (10 minutes) or its transcript wrote in the last 3 minutes ($Seen: agent id -> last write), so one that died
+# quietly stops holding turns; those are dropped from $Out. True when one of $Session's is still out.
+function Test-AgentsOut([hashtable]$Out, [string]$Session, [hashtable]$Seen, [datetime]$Now) {
+    $held = $false
+    foreach ($id in @($Out.Keys)) {
+        $a = $Out[$id]
+        $live = ($Now - [datetime]$a.At).TotalMinutes -lt 10 -or ($Seen -and $Seen[$id] -and ($Now - [datetime]$Seen[$id]).TotalSeconds -lt 180)
+        if (-not $live) { $Out.Remove($id); continue }
+        if ($a.Session -eq $Session) { $held = $true }
+    }
+    $held
+}
+
 # The first prompt after more than 6 quiet hours gets one stretch and no words.
 function Test-QuietReturn([datetime]$LastMainUtc, [datetime]$NowUtc) { ($NowUtc - $LastMainUtc).TotalHours -gt 6 }
 

@@ -180,6 +180,7 @@ $script:Target = $null
 $script:Tick = 0
 $script:LastSave = [datetime]::UtcNow
 $script:Subagents = @{}
+$script:AgentsOut = @{}        # background agents launched and not yet notified back: id -> @{ Session; At } (Test-AgentsOut)
 $script:Minions = [System.Collections.Generic.List[object]]::new()
 $script:Particles = [System.Collections.Generic.List[object]]::new()
 $script:Usage = [System.Collections.Generic.List[object]]::new()
@@ -688,7 +689,13 @@ function Invoke-Wave([double]$Seconds = 2.4) {
 }
 
 # Claude needs you: a hop and a wave, eyes on you, for about 20 seconds; then Tok settles and the bubble carries it.
-function Invoke-NeedsYou { $script:GreetCancelled = $true; Invoke-Hop -Plain; Invoke-Wave 20 }      # the needs-you hop never scales with age
+# A mouthful in progress ends first: the question's own message brings a usage event, and its meal used to take the
+# face over a beat later, so Tok ate instead of waving (seen in the 10-11 takes).
+function Invoke-NeedsYou {
+    $script:GreetCancelled = $true
+    if ($script:Meal) { Stop-Meal }
+    Invoke-Hop -Plain; Invoke-Wave 20      # the needs-you hop never scales with age
+}
 
 # The window resets: the nightcap comes off and Tok has a big stretch (the tokens are back).
 function Invoke-Reset {
@@ -857,7 +864,7 @@ function Invoke-BodyEvent($E) {
                 # the bubble stays for as long as the wave runs (20 s); after that the eyes stay on you, still, until you answer
                 # (Step-Eyes) and the hover line says how long it has been waiting
                 $script:WaitingSince = $now
-                Say $line 20 -Pin
+                Say (Get-NeedsLine $line $script:Rng.NextDouble()) 20 -Pin
             } elseif ($chatter -eq 'quiet' -or ($chatter -eq 'normal' -and $E.Name -notin $script:NormalTools)) {
                 # no bubble
             } elseif ($E.Name -eq 'Agent') {
@@ -937,6 +944,9 @@ function Invoke-BodyEvent($E) {
             $script:LastEvent = $now; $script:TurnOpen = $false; $script:GreetCancelled = $true      # a turn ending cuts the first bubbles short
             if (Test-WaitingAnswered $script:WaitingSince $now) { $script:WaitingSince = $null }
             (Get-Today $script:State).Done++
+            # Minions still out in the background: not the hand-over yet (Test-AgentsOut). Just a settle; the prompt's time and any
+            # error stay, so the turn that ends once the last one is back says "All yours." for the whole of it.
+            if (Test-AgentsOut $script:AgentsOut "$($E.Session)" (Get-AgentSeen) $now) { Invoke-Squish 0.05 120; return }
             $long = [bool]($script:LastPrompt -and ($now - $script:LastPrompt).TotalSeconds -gt 45)
             # A short turn only settles. A long one hops and says "All yours." with the done pip landing on the hop's touchdown;
             # if it ended on an error there is no hop and the line says so, with the falling pip now. No love face either way.
@@ -949,6 +959,8 @@ function Invoke-BodyEvent($E) {
             elseif ($end.Pip) { Invoke-Chime $end.Pip }
             $script:LastPrompt = $null; $script:TurnErr = $false
         }
+        'AgentOut'  { $script:AgentsOut[$E.Id] = @{ Session = "$($E.Session)"; At = $now } }
+        'AgentBack' { $script:AgentsOut.Remove($E.Id) }
         'Limit' {
             $reset = if ($script:WindowInfo -and $script:WindowInfo.Real) { $script:WindowInfo.Reset }
             Set-PetComa $script:State $E.Text $reset
@@ -1048,7 +1060,7 @@ function Invoke-HookNeeds($M) {
     Invoke-NeedsYou
     Invoke-Chime 'needs'
     $script:WaitingSince = $now
-    Say $line 20 -Pin
+    Say (Get-NeedsLine $line $script:Rng.NextDouble()) 20 -Pin
 }
 
 # ---------------------------------------------------------------- perching
@@ -1170,6 +1182,13 @@ function Update-Subagent([string]$Path, $E) {
     }
 }
 
+# Each agent's last write, by its id (its transcript is subagents\agent-<id>.jsonl), for Test-AgentsOut.
+function Get-AgentSeen {
+    $seen = @{}
+    foreach ($k in @($script:Subagents.Keys)) { if ($k -match 'agent-([\w-]+)\.jsonl$') { $seen[$Matches[1]] = $script:Subagents[$k].Seen } }
+    $seen
+}
+
 function Add-Particle([string]$Text, [string]$Color, [double]$X, [double]$Y, [double]$Vx, [double]$Vy, [double]$Life, [double]$Size = 9, [bool]$Front = $true) {
     $tb = [Windows.Controls.TextBlock]@{ Text = $Text; FontSize = $Size; FontFamily = 'Segoe UI Symbol'; IsHitTestVisible = $false
         Foreground = [Windows.Media.BrushConverter]::new().ConvertFromString($Color) }
@@ -1260,17 +1279,18 @@ function Set-MealFace([string]$Face) {
     $script:Meal.Face = $Face
     Set-Override $Face 4
 }
+# The mouthful's last step: the token is in, the lantern settles. Needs-you calls it too, to cut a mouthful short.
+function Stop-Meal {
+    $ui.MealTok.Visibility = 'Collapsed'; Show-LanternRipple 1; Set-LanternPulse $false
+    foreach ($c in $ui.CheekLPuff, $ui.CheekRPuff) { $c.ScaleX = 1; $c.ScaleY = 1 }
+    $script:Meal = $null
+    if ($script:Override -like 'eat?') { $script:Override = $null; Update-Look $script:Mood }
+}
 function Step-Meal {
     if (-not $script:Meal) { return }
     $m = $script:Meal
     $u = ([datetime]::UtcNow - $m.Start).TotalSeconds
-    if ($u -ge 3.0) {
-        $ui.MealTok.Visibility = 'Collapsed'; Show-LanternRipple 1; Set-LanternPulse $false
-        foreach ($c in $ui.CheekLPuff, $ui.CheekRPuff) { $c.ScaleX = 1; $c.ScaleY = 1 }
-        $script:Meal = $null
-        if ($script:Override -like 'eat?') { $script:Override = $null; Update-Look $script:Mood }
-        return
-    }
+    if ($u -ge 3.0) { Stop-Meal; return }
     $ui.MealTok.Visibility = 'Visible'
     if ($u -lt 0.6) {
         $q = Get-Ease ($u / 0.6)
@@ -1435,7 +1455,7 @@ function Step-Life {
     foreach ($l in $script:Tail.Poll()) {
         $events = @(ConvertTo-BodyEvents $l.Line $l.Sub $l.Cwd)
         if ($l.Sub) { Update-Subagent $l.Path $null; foreach ($e in $events) { Update-Subagent $l.Path $e } }
-        foreach ($e in $events) { Invoke-BodyEvent $e }
+        foreach ($e in $events) { if (-not $l.Sub) { $e.Session = $l.Path }; Invoke-BodyEvent $e }
     }
     Read-Inbox
     Step-Private
@@ -1492,11 +1512,8 @@ function Step-Life {
     $watch = Get-WatchSeconds $script:LastEvent $script:TurnOpen @($script:Subagents.Values | ForEach-Object { $_.Seen }) $now
     $mood = if ($script:ForcedMood) { $script:ForcedMood } else { Get-PetMood $script:State $script:Pct $idle $watch }
     if ($mood -eq 'busy' -and $now -lt $script:FastUntil) { $mood = 'zoom' }
+    if ($mood -eq 'stuffed') { Test-FullWarning }
     if ($mood -ne $script:Mood) {
-        $pct = [math]::Round($script:Pct * 100)
-        switch ($mood) {
-            'stuffed' { Say "🏮 $(if (-not $script:WindowInfo.Real) { '~' })$pct% of the window.`nNearly full." 6 -Pin }
-        }
         Update-Look $mood
         $script:Mood = $mood
     } elseif ($script:Override -and $now -ge $script:OverrideUntil) {
@@ -1612,6 +1629,19 @@ function Test-WeekWarning {
     Write-BodyLog "week warning: $([math]::Round($w.Week.Pct))% of the week, resets $(Get-WeekResetText $w.Week.Reset)"
 }
 
+# The window filling up (Get-FullWarn): checked while Tok looks stuffed, i.e. between turns, so it never talks over the work.
+# Once per window at 85% and once at 100%; the key is saved in the state, so a restart doesn't say it again.
+function Test-FullWarning {
+    $w = $script:WindowInfo
+    if (-not $w) { return }
+    $warn = Get-FullWarn $script:Pct ([bool]$w.Real) $w.Reset "$($script:State.FullWarnKey)"
+    if (-not $warn) { return }
+    $script:State.FullWarnKey = $warn.Key
+    Say $warn.Line 6 -Pin
+    Save-PetJson $script:State 'state.json'
+    Write-BodyLog "full warning: $([math]::Round($script:Pct * 100))% of the window ($($warn.Key))"
+}
+
 # ---------------------------------------------------------------- menu + input
 $menu = [Windows.Controls.ContextMenu]::new()
 $menu.Resources = Get-MenuResources
@@ -1684,7 +1714,7 @@ $script:Tip.Add_Opened({ $script:Tip.HorizontalOffset = ($ui.Pet.ActualWidth - $
 $window.Add_ToolTipOpening({
     $w = $script:WindowInfo
     $name = if ($script:State.Lineage) { Get-LineageName $script:State.Lineage } else { 'Tok' }
-    $doing = switch ($script:Mood) { 'busy' { 'working' } 'zoom' { 'working fast' } 'sleep' { 'napping' } 'coma' { "asleep until $(Get-WakeText)" } 'stuffed' { 'nearly full' } 'full' { 'filling up' } default { $script:Mood } }
+    $doing = switch ($script:Mood) { 'busy' { 'working' } 'zoom' { 'working fast' } 'sleep' { 'napping' } 'coma' { "asleep until $(Get-WakeText)" } 'stuffed' { Get-StuffedText $script:Pct } 'full' { 'filling up' } default { $script:Mood } }
     $belly = Get-BellyText $w
     $window.ToolTip.Content = "$(Get-WaitingText $script:WaitingSince ([datetime]::UtcNow))$name · $doing · $belly$(if (Test-Private) { ' · private' })"
 })

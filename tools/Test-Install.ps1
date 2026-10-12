@@ -96,9 +96,9 @@ try {
     while ((Get-Date) -lt $deadline -and -not ((Test-Path $log) -and (Get-Content $log -Raw) -match 'family tree built')) { Start-Sleep -Milliseconds 500 }
     $logText = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
     Check 'first run: Tok starts in the temp folder, beside the real one (its own mutex)' { $logText -match "started \(pid $($tok.Id)" -and (Test-TokRunning) -and -not $tok.HasExited }
-    Check 'first run: it reads the temp Claude folder (the made-up day: 12 replies, one generation, hatched)' {
+    Check 'first run: it reads the temp Claude folder (the made-up day: 12 replies, one generation, hatched, named just Tok)' {
         $s = Get-Content (Join-Path $data 'state.json') -Raw | ConvertFrom-Json -AsHashtable
-        $logText -match 'family tree built' -and $s.Lineage.Versions['5.5'].Replies -eq 12 -and @($s.Lineage.Generations).Count -eq 1 -and (Get-PetStage $s).Name -eq 'hatchling'
+        $logText -match 'family tree built' -and $s.Lineage.Versions['5.5'].Replies -eq 12 -and @($s.Lineage.Generations).Count -eq 1 -and (Get-PetStage $s).Name -eq 'hatchling' -and (Get-LineageName $s.Lineage) -ceq 'Tok'
     }
     Check 'first run: no errors in its log' { $logText -notmatch 'tick:|failed|error' }
 

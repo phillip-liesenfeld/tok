@@ -2,7 +2,7 @@
 # Notification hook in Claude Code's settings, the skill, the Settings › Apps entry, and seeing whether a Tok is running (by its mutex, Get-TokMutexName in lib\Pet.ps1). Nothing here runs on load.
 
 # The version Install writes to Settings › Apps.
-$script:TokVersion = '1.1'
+$script:TokVersion = '1.1.1'
 
 # Which Tok folder a shortcut starts: Set-TokShortcut's (…\tok.ps1) or a 1.0 one's (wscript …\Start-Tok.vbs). $null for any
 # other shortcut.
