@@ -15,7 +15,7 @@ Its belly is a lantern. The glow rises as you use your **5-hour window**: the us
 - **It runs no model** and uses no tokens. Every line it says was written ahead of time.
 - **It isn't a pet you have to feed.** Nothing bad happens if you ignore it, and there's no score.
 - **It stays out of the way:** no taskbar button, no Alt-Tab entry, and it doesn't take focus when it appears or moves. Drag it anywhere and it stays there.
-- **It's free and unofficial.** Anthropic didn't make it.
+- **It's free** and open source (MIT).
 - **It's Windows only,** drawn with WPF on PowerShell 7.
 
 ## What you'll see
